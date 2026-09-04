@@ -256,7 +256,7 @@ Before merging an adapter release PR:
 Before merging a chart release PR:
 
 1. It is labelled `chart-release: pending` and titled `chore: release chart X.Y.Z`.
-2. It touches exactly three files: `deploy/chart/CHANGELOG.md`, `deploy/chart/Chart.yaml` (`version`) and `deploy/chart/README.md` (the cosign example). A release PR that does not touch `README.md` means the `x-release-please-start-version` markers broke; fix the markers before merging.
+2. `deploy/chart/CHANGELOG.md`, `deploy/chart/Chart.yaml` (`version`) and `deploy/chart/README.md` (the cosign example) show the new chart version. A release PR that does not touch `README.md` means the `x-release-please-start-version` markers broke; fix the markers before merging.
 3. `Chart.yaml` `appVersion` points at an adapter version that is **already published** as an image. The chart publish job does not wait on an image build. After an adapter release the chart changelog shows `release adapter X.Y.Z` under Miscellaneous; that entry is expected.
 4. Keep `release-as` **absent** from `.release-please/config-chart.json`. It is permanent, not one-shot: every later chart release would repeat the same version.
 5. Merge method is **Squash and merge**.
