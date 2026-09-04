@@ -11,7 +11,6 @@ import (
 )
 
 func TestNewPool(t *testing.T) {
-
 	t.Run("Should return error when configured to connect to secure redis", func(t *testing.T) {
 		_, err := NewPool(etc.RedisPool{
 			URL: "rediss://hostname:6379",
@@ -25,7 +24,6 @@ func TestNewPool(t *testing.T) {
 		})
 		assert.EqualError(t, err, "invalid redis URL scheme: https")
 	})
-
 }
 
 func TestParseSentinelURL(t *testing.T) {
@@ -86,8 +84,8 @@ func TestParseSentinelURL(t *testing.T) {
 
 			sentinelURL, err := ParseSentinelURL(configURL)
 
-			switch {
-			case tc.expectedError == "":
+			switch tc.expectedError {
+			case "":
 				require.NoError(t, err)
 				assert.Equal(t, tc.expectedSentinelURL, sentinelURL)
 			default:
@@ -95,5 +93,4 @@ func TestParseSentinelURL(t *testing.T) {
 			}
 		})
 	}
-
 }

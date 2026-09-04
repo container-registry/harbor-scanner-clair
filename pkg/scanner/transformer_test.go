@@ -1,14 +1,15 @@
 package scanner
 
 import (
+	"testing"
+	"time"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/manifest"
 	"github.com/docker/distribution/manifest/schema2"
-	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
-	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/stretchr/testify/assert"
-	"testing"
-	"time"
 )
 
 type fixedClock struct {
@@ -99,7 +100,8 @@ func TestTransformer_ToHarborScanReport(t *testing.T) {
 						Link:        "https://security-tracker.debian.org/tracker/CVE-2019-5094",
 						Severity:    "Medium",
 						FixedBy:     "1.43.4-2+deb9u1",
-					}},
+					},
+				},
 			},
 			{
 				Name:    "glibc",

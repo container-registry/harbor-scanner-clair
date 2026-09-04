@@ -3,24 +3,29 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
-	log "github.com/sirupsen/logrus"
 	"net/http"
 	"strings"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
 	HeaderContentType = "Content-Type"
 )
 
-var MimeTypeOCIImageManifest = MimeType{Type: "application", Subtype: "vnd.oci.image.manifest.v1+json"}
-var MimeTypeDockerDistributionManifest = MimeType{Type: "application", Subtype: "vnd.docker.distribution.manifest.v2+json"}
+var (
+	MimeTypeOCIImageManifest           = MimeType{Type: "application", Subtype: "vnd.oci.image.manifest.v1+json"}
+	MimeTypeDockerDistributionManifest = MimeType{Type: "application", Subtype: "vnd.docker.distribution.manifest.v2+json"}
+)
 
-var MimeTypeVersion = map[string]string{"version": "1.0"}
-var MimeTypeError = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.error", Params: MimeTypeVersion}
-var MimeTypeScanResponse = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.scan.response+json", Params: MimeTypeVersion}
-var MimeTypeScanReport = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.vuln.report.harbor+json", Params: MimeTypeVersion}
-var MimeTypeMetadata = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.metadata+json", Params: MimeTypeVersion}
+var (
+	MimeTypeVersion      = map[string]string{"version": "1.0"}
+	MimeTypeError        = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.error", Params: MimeTypeVersion}
+	MimeTypeScanResponse = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.scan.response+json", Params: MimeTypeVersion}
+	MimeTypeScanReport   = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.vuln.report.harbor+json", Params: MimeTypeVersion}
+	MimeTypeMetadata     = MimeType{Type: "application", Subtype: "vnd.scanner.adapter.metadata+json", Params: MimeTypeVersion}
+)
 
 type MimeTypeParams map[string]string
 
@@ -44,8 +49,7 @@ func (mt MimeType) String() string {
 	return fmt.Sprintf("%s; %s", s, strings.Join(params, ";"))
 }
 
-type BaseHandler struct {
-}
+type BaseHandler struct{}
 
 func (h *BaseHandler) WriteJSON(res http.ResponseWriter, data interface{}, mimeType MimeType, statusCode int) {
 	res.Header().Set(HeaderContentType, mimeType.String())

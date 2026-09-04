@@ -47,7 +47,6 @@ func (s *Server) listenAndServe() error {
 	}
 
 	s.server.TLSConfig = &tls.Config{
-		PreferServerCipherSuites: true,
 		CurvePreferences: []tls.CurveID{
 			tls.CurveP256,
 			tls.X25519,

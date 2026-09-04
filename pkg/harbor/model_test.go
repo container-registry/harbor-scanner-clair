@@ -2,9 +2,10 @@ package harbor
 
 import (
 	"fmt"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestSeverity_MarshalJSON(t *testing.T) {

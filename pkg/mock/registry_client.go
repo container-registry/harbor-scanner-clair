@@ -1,9 +1,9 @@
 package mock
 
 import (
-	"github.com/docker/distribution"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
+	"github.com/docker/distribution"
 	"github.com/stretchr/testify/mock"
 )
 

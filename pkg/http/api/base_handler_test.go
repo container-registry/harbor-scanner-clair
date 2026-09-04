@@ -1,11 +1,12 @@
 package api
 
 import (
-	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMimeType_String(t *testing.T) {

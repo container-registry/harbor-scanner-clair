@@ -18,7 +18,6 @@ func (as *worker) Task() {
 	log.Debugf("Scan worker started processing: %v", as.request.Artifact)
 
 	err := as.scan()
-
 	if err != nil {
 		log.WithError(err).Error("Scan worker failed")
 		err = as.store.UpdateStatus(as.jobID, job.Failed, err.Error())

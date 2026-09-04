@@ -3,13 +3,14 @@ package registry
 import (
 	"crypto/tls"
 	"fmt"
-	"github.com/docker/distribution"
-	"github.com/docker/distribution/manifest/schema2"
-	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
-	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"sync"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/docker/distribution"
+	"github.com/docker/distribution/manifest/schema2"
 )
 
 var (
@@ -69,7 +70,7 @@ func (c *client) GetManifest(sr harbor.ScanRequest) (distribution.Manifest, erro
 	}
 
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
