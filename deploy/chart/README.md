@@ -162,7 +162,7 @@ long-lived key to manage:
 cosign verify \
   --certificate-identity-regexp '^https://github\.com/container-registry/harbor-scanner-clair/\.github/workflows/publish-chart\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  8gears.container-registry.com/8gcr/charts/harbor-scanner-clair:0.0.0
+  8gears.container-registry.com/8gcr/charts/harbor-scanner-clair:0.1.0
 ```
 <!-- x-release-please-end -->
 

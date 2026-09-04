@@ -2,10 +2,10 @@
 apiVersion: v2
 name: harbor-scanner-clair
 description: A production-ready Helm chart for the Harbor Scanner Adapter for
-  Clair - the vulnerability scanner adapter that fronts an external CoreOS
-  Clair 2.x.
+  Clair - the vulnerability scanner adapter that fronts an external CoreOS Clair
+  2.x.
 type: application
-version: 0.0.0
+version: 0.1.0
 # appVersion tracks the adapter release; the app release-please line rewrites
 # this line, the chart release-please line rewrites `version` above.
 appVersion: "v1.1.1" # x-release-please-version
