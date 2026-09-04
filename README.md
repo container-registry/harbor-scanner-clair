@@ -117,8 +117,9 @@ them for your Clair and Redis before applying. There is no Helm chart yet.
    curl -vk https://localhost:8443/api/v1/metadata | jq
    ```
 4. Register the adapter in Harbor under Administration > Interrogation Services > Scanners,
-   using the URL at which Harbor can reach the service. Harbor's **Test Connection** button
-   calls the same `/api/v1/metadata` endpoint.
+   using the URL at which Harbor can reach the service, and tick **Skip certificate
+   verification**: the certificate generated above is self-signed and carries no SAN. Harbor's
+   **Test Connection** button calls the same `/api/v1/metadata` endpoint.
 
 To try a locally built image instead of the published one, build it into the cluster's Docker
 daemon and change the `image:` field in the manifest:
