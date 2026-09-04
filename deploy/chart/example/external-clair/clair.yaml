@@ -1,0 +1,97 @@
+---
+# Evaluation-grade CoreOS Clair 2.x. NOT for production and NOT supported by
+# this project: Clair 2.x is end of life, and this manifest exists so the
+# adapter has something to talk to while you evaluate it.
+#
+# goharbor/clair-photon is Harbor's own build of Clair 2.x. It is the last one
+# that is still anonymously pullable; quay.io/coreos/clair returns 401 to
+# anonymous clients.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clair
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clair-config
+  namespace: clair
+data:
+  # The image's entrypoint runs `clair -config /etc/clair/config.yaml`, so the
+  # path below is fixed, not a choice.
+  config.yaml: |
+    clair:
+      database:
+        type: pgsql
+        options:
+          source: "postgresql://clair:REPLACE_ME@clair-postgres:5432/clair?sslmode=disable"
+          cachesize: 16384
+      api:
+        port: 6060
+        healthport: 6061
+        timeout: 900s
+      updater:
+        # Clair fetches its own vulnerability feeds. Several upstream sources
+        # (Oracle, Amazon Linux) now answer 403/429 to this client, which shows
+        # up as `could not download requested resource` and is not fatal.
+        interval: 12h
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clair
+  namespace: clair
+spec:
+  selector:
+    app: clair
+  ports:
+    - name: api
+      port: 6060
+      targetPort: 6060
+    - name: health
+      port: 6061
+      targetPort: 6061
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clair
+  namespace: clair
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clair
+  template:
+    metadata:
+      labels:
+        app: clair
+    spec:
+      containers:
+        - name: clair
+          image: goharbor/clair-photon:v1.10.19
+          ports:
+            - name: api
+              containerPort: 6060
+            - name: health
+              containerPort: 6061
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /etc/clair
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: clair-config

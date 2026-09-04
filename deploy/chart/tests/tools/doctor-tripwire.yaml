@@ -1,0 +1,26 @@
+---
+# Every finding the doctor knows how to make. All of it renders fine and passes
+# the schema, which is the point: these are the mistakes only a human would
+# otherwise catch.
+replicaCount: 1
+clair:
+  url: http://clair.clair.svc:6060
+  databaseUrl: postgres://clair:hunter2@postgres:5432/clair?sslmode=disable
+redis:
+  url: redis://:hunter2@redis:6379/5
+api:
+  tls:
+    enabled: true
+    certificate: CERT
+    key: KEY
+tls:
+  insecureSkipVerify: true
+extraCA:
+  existingSecret: corp-ca
+imageCredentials:
+  create: true
+  username: u
+  password: p
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

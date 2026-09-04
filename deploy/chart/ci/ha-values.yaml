@@ -1,0 +1,41 @@
+---
+# Multi-replica install with every optional workload object turned on.
+replicaCount: 3
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: harbor
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: harbor-scanner-clair

@@ -1,0 +1,63 @@
+---
+# Evaluation-grade PostgreSQL for Clair. NOT for production: a single replica,
+# an emptyDir, and a password in a manifest. Swap it for your own database.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clair-postgres
+  namespace: clair
+type: Opaque
+stringData:
+  POSTGRES_USER: clair
+  POSTGRES_PASSWORD: REPLACE_ME
+  POSTGRES_DB: clair
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clair-postgres
+  namespace: clair
+spec:
+  selector:
+    app: clair-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clair-postgres
+  namespace: clair
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clair-postgres
+  template:
+    metadata:
+      labels:
+        app: clair-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:13-alpine
+          envFrom:
+            - secretRef:
+                name: clair-postgres
+          env:
+            # The image refuses to initialise into a directory that already has
+            # the lost+found of a mounted volume, so give it a subdirectory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        # Evaluation only. Every restart loses the vulnerability database and
+        # Clair spends the next several minutes refetching it.
+        - name: data
+          emptyDir: {}

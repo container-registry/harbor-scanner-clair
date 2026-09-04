@@ -1,0 +1,245 @@
+{{ template "chart.header" . }}
+
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.description" . }}
+
+The adapter implements Harbor's scanner adapter API: Harbor posts a scan
+request, the adapter fetches the image manifest from the registry, posts each
+layer to Clair's **v1** REST API, polls for the result, and transforms it into a
+Harbor vulnerability report stored in Redis.
+
+> **Clair 2.x is end of life, and this chart does not deploy it.** Harbor
+> removed its bundled Clair in 2.2 (November 2020) and CoreOS Clair 2.x has
+> been unmaintained since. The adapter speaks the Clair **v1** API only, not the
+> 4.x indexer/matcher split, and it implements Harbor's adapter API **v1.0**:
+> vulnerability reports, no SBOM. Do not make it Harbor's system default
+> scanner - Harbor derives its registry-wide Security Hub numbers from the
+> default scanner's capabilities. For a maintained backend, use the Trivy
+> adapter.
+
+## Prerequisites
+
+- Kubernetes >= 1.28
+- **A CoreOS Clair 2.x server you operate**, reachable at `clair.url`. Harbor
+  ships none; see [`example/external-clair/`](example/external-clair/).
+- A Redis reachable from the cluster. Harbor's own Redis is the usual choice;
+  give the adapter its own database number (Harbor uses `0`-`4`).
+- A Harbor >= 2.2 to register the scanner with.
+- Optionally, Clair's PostgreSQL DSN (`clair.databaseUrl`), read for one query:
+  the vulnerability database timestamp Harbor shows next to the scanner.
+
+## Install
+
+```sh
+helm install harbor-scanner-clair \
+  oci://8gears.container-registry.com/8gcr/charts/harbor-scanner-clair \
+  --namespace harbor --create-namespace \
+  --set clair.url=http://clair.clair.svc:6060
+```
+
+Then register the scanner in Harbor under **Administration -> Interrogation
+Services -> Scanners -> NEW SCANNER**, using the endpoint the chart prints on
+install:
+
+```
+http://harbor-scanner-clair.harbor.svc:8080
+```
+
+The defaults assume Harbor's own Redis at `redis://harbor-harbor-redis:6379`.
+Point `redis.url` at yours, or read the whole URL out of a Secret with
+`redis.existingSecret` (see [`example/external-redis/`](example/external-redis/)).
+
+## What this chart gives you
+
+- **Secrets stay yours.** Every credential has an `existingSecret` form - the
+  Clair database DSN, the Redis URL (password included), the TLS keypair - so
+  nothing sensitive has to live in a values file or in Git.
+- **Deterministic renders.** Nothing is generated at render time, so Argo CD and
+  Flux see no drift. CI renders the GitOps values twice and fails on any diff.
+- **Fail-fast validation.** A closed `values.schema.json` rejects unknown or
+  malformed keys, and render-time guards catch the cross-field mistakes a schema
+  cannot express - TLS enabled with no certificate, a PDB with no budget, a
+  Clair DSN that is both inlined and externally owned. They fail
+  `helm template`, not the cluster.
+- **Probes as data.** The full Kubernetes probe specs are values. The chart
+  injects `scheme: HTTPS` when you turn TLS on.
+- **The whole production surface.** ServiceAccount, PodDisruptionBudget, HPA,
+  ServiceMonitor, NetworkPolicy, scheduling constraints, sidecars, init
+  containers, and `extraManifests` - independently switchable, and off by
+  default except the dedicated ServiceAccount, which is created for you.
+- **No dead ends.** Every adapter setting is reachable through `config` /
+  `secret` without a chart change, and every Kubernetes field the chart does not
+  template is reachable through the merge hatches below.
+
+## Configuring the adapter
+
+The adapter is configured entirely by environment variables, so `config` reaches
+all of it - including settings added after this chart version:
+
+```yaml
+config:
+  scanner:
+    clair:
+      url: http://clair.clair.svc:6060
+    store:
+      redis:
+        scan_job_ttl: 4h
+    log:
+      level: debug
+```
+
+Nested keys join with `_` and are uppercased, lists join with `,`, so that
+renders `SCANNER_CLAIR_URL`, `SCANNER_STORE_REDIS_SCAN_JOB_TTL` and
+`SCANNER_LOG_LEVEL` into a ConfigMap consumed with `envFrom`. No prefix is
+imposed, so `HTTP_PROXY` and friends are reachable the same way.
+
+`secret` takes the identical notation but renders into a Secret, so the values
+never enter the pod spec. Credential-shaped keys in `config` are refused at
+render time.
+
+Precedence, lowest to highest:
+
+```
+chart defaults  <  config / secret  <  extraEnv
+```
+
+Kubernetes evaluates `envFrom` before `env`, so a chart-set variable would
+otherwise beat your `config`. The chart drops its own entry for any name you
+claim, which is what makes the middle of that chain work.
+
+## Escape hatches
+
+The chart cannot template every field of a Deployment. Three deep-merge hooks
+cover what it does not expose, and yours wins on conflict:
+
+| Value | Merges into | For example |
+|-------|-------------|-------------|
+| `deploymentSpecOverrides` | `.spec` | `minReadySeconds`, `progressDeadlineSeconds`, `paused` |
+| `podSpecOverrides` | `.spec.template.spec` | `runtimeClassName`, `hostNetwork`, `enableServiceLinks`, `nodeName` |
+| `containerOverrides` | the adapter container | `workingDir`, `terminationMessagePolicy`, `resizePolicy` |
+
+The merge only runs when one is set, so the default render stays in template
+order; opting in re-marshals the object (sorted keys, still deterministic).
+`extraManifests` covers anything that is a separate object rather than a field.
+
+## Sizing
+
+The adapter holds no vulnerability data. It fetches an image manifest, posts the
+layers to Clair, and turns the answer into a Harbor report; the database, the
+matching and the memory that goes with them live in the Clair server. So:
+
+- **Scale for concurrency, not for data.** `replicaCount` and `autoscaling`
+  raise how many scans can be in flight. Each in-flight scan holds a manifest
+  and a report in memory, which is why the memory limit exists at all.
+- **Clair is the bottleneck, and it is not in this chart.** A slow scan is
+  almost always Clair fetching or matching, not the adapter.
+- **There is no queue.** The worker pool starts one goroutine per request with
+  no concurrency cap and no retries, and a pod restart loses every scan it was
+  running. Harbor retries at its own level; size `terminationGracePeriodSeconds`
+  with that in mind rather than expecting a drain.
+
+## TLS
+
+`api.tls.enabled` switches the listener to HTTPS; Harbor must then be registered
+with an `https://` endpoint and must trust the issuing CA. Prefer
+`api.tls.existingSecret` - it takes a cert-manager `Certificate` Secret
+directly. See [`example/tls-cert-manager/`](example/tls-cert-manager/).
+
+There is no mutual TLS: the adapter never verifies client certificates. Use
+`networkPolicy.ingress` to restrict who may call it.
+
+For **outbound** trust - a registry, Redis or Clair behind a private CA - use
+`extraCA`, see [`example/private-ca/`](example/private-ca/).
+`tls.insecureSkipVerify` turns verification off for all of them at once and is
+a much blunter instrument.
+
+## Verifying the chart signature
+
+Chart releases are cosign-signed keylessly by the release workflow, with no
+long-lived key to manage:
+
+{{/* The markers let the chart release PR restamp the version below, since
+release-please rewrites Chart.yaml without re-running helm-docs. */}}
+<!-- x-release-please-start-version -->
+```sh
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/container-registry/harbor-scanner-clair/\.github/workflows/publish-chart\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  8gears.container-registry.com/8gcr/charts/harbor-scanner-clair:{{ .Version }}
+```
+<!-- x-release-please-end -->
+
+Flux can enforce the same check on every reconcile - see
+[`example/flux/`](example/flux/).
+
+## Troubleshooting
+
+**The scanner shows as unhealthy in Harbor.** Harbor calls `/api/v1/metadata`.
+Check the adapter answers from inside the cluster, then check Harbor can reach
+that exact URL - a TLS-enabled adapter registered with an `http://` endpoint
+fails here, and so does an `https://` endpoint whose CA Harbor does not trust.
+
+```sh
+kubectl -n harbor exec deploy/harbor-scanner-clair -- \
+  wget -qO- http://localhost:8080/api/v1/metadata
+```
+
+**The pod is Ready but every scan fails.** `/probe/ready` returns 200
+unconditionally: it checks neither Redis nor Clair. Readiness proves the process
+is up and nothing else. `/api/v1/metadata` is the real check, and the logs name
+which dependency is missing.
+
+```sh
+kubectl -n harbor logs deploy/harbor-scanner-clair | grep -i "clair\|redis"
+```
+
+**Scans stay pending forever.** The report lives in Redis under
+`store.redisNamespace`, and Harbor polls for it. Wrong URL, wrong database or a
+password that never arrived all look the same from Harbor. Note also that a
+report expires after `store.redisScanJobTTL` (default `1h`) whether Harbor
+collected it or not.
+
+**`x509: certificate signed by unknown authority`.** The registry, Redis or
+Clair is behind a private CA. Use `extraCA` - see
+[`example/private-ca/`](example/private-ca/). Do not reach for
+`tls.insecureSkipVerify`, which disables verification everywhere.
+
+**The adapter will not start, naming a root CA pool.** `extraCA.keys` names a
+file that is absent from the Secret or ConfigMap, or that is not PEM. The
+adapter reads every path in `SCANNER_TLS_CLIENTCAS` at startup and refuses to
+run if one cannot be appended.
+
+**A values key stopped working after an upgrade.** The schema root is closed, so
+an unknown key fails the render by name. A values file written for the Trivy
+adapter fails the same way, by design.
+
+## Uninstalling
+
+```sh
+helm uninstall harbor-scanner-clair --namespace harbor
+```
+
+Nothing is left behind: the chart provisions no PersistentVolumeClaims. Scan
+reports stay in Redis until their TTL expires. Remove the scanner registration
+in Harbor as well, or it keeps pointing at a Service that no longer exists.
+
+## Examples
+
+See [`example/`](example/) - standing up a Clair backend, Harbor integration,
+external Redis, cert-manager TLS, FluxCD, OpenShift and private CAs. CI renders
+all of them on every change.
+
+## Moving from the `kube/` manifests
+
+The repository's `kube/harbor-scanner-clair.yaml` is a raw Deployment and
+Service. [`docs/FROM-KUBE-MANIFESTS.md`](docs/FROM-KUBE-MANIFESTS.md) maps each
+of its environment variables onto a chart value.
+
+{{ template "chart.maintainersSection" . }}
+
+{{ template "chart.sourcesSection" . }}
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}

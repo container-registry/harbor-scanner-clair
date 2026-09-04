@@ -1,0 +1,191 @@
+---
+suite: defaults
+release:
+  name: t
+  namespace: harbor
+templates:
+  - deployment.yaml
+tests:
+  - it: renders a single-replica Deployment with the fullname
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: metadata.name
+          value: t-harbor-scanner-clair
+      - equal:
+          path: metadata.namespace
+          value: harbor
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: keeps the immutable selector free of the chart version
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: harbor-scanner-clair
+            app.kubernetes.io/instance: t
+
+  - it: hardens the pod and container security contexts
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 10000
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+
+  - it: does not mount a ServiceAccount token
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: mounts /tmp so a read-only root filesystem still leaves scratch space
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+
+  - it: mounts no cache volume, because the adapter keeps nothing on disk
+    asserts:
+      - notExists:
+          path: spec.volumeClaimTemplates
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+
+  - it: sets all three probes on the api-server port
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /probe/healthy
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /probe/ready
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: api-server
+      - notExists:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.scheme
+
+  - it: drops a probe set to null
+    set:
+      probes.startup: null
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].startupProbe
+      - exists:
+          path: spec.template.spec.containers[0].livenessProbe
+
+  - it: rolls the pods when chart-managed config material changes
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: changes the config checksum when the inlined Clair DSN changes
+    set:
+      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+    asserts:
+      - notEqual:
+          path: spec.template.metadata.annotations["checksum/config"]
+          # The default render's checksum. Regenerate with:
+          #   helm template t deploy/chart | grep checksum/config
+          value: 9a83c77dfe1478e31da59c875be52fe26b871eefc001c3ec0a2232c62f22e581
+
+  - it: emits exactly the adapter's environment and nothing from another adapter
+    asserts:
+      # The full default env list, in order. The adapter reads only these; a
+      # SCANNER_TRIVY_* or SCANNER_JOB_QUEUE_* name here would be silently
+      # ignored at runtime, which is worse than a render failure.
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - name: SCANNER_LOG_LEVEL
+              value: "info"
+            - name: SCANNER_API_SERVER_ADDR
+              value: ":8080"
+            - name: SCANNER_API_SERVER_READ_TIMEOUT
+              value: "15s"
+            - name: SCANNER_API_SERVER_WRITE_TIMEOUT
+              value: "15s"
+            - name: SCANNER_API_SERVER_IDLE_TIMEOUT
+              value: "60s"
+            - name: SCANNER_CLAIR_URL
+              value: "http://harbor-harbor-clair:6060"
+            - name: SCANNER_STORE_REDIS_URL
+              value: "redis://harbor-harbor-redis:6379"
+            - name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
+              value: "5"
+            - name: SCANNER_STORE_REDIS_POOL_MAX_IDLE
+              value: "5"
+            - name: SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT
+              value: "5m"
+            - name: SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT
+              value: "1s"
+            - name: SCANNER_STORE_REDIS_POOL_READ_TIMEOUT
+              value: "1s"
+            - name: SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT
+              value: "1s"
+            - name: SCANNER_STORE_REDIS_NAMESPACE
+              value: "harbor.scanner.clair:store"
+            - name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+              value: "1h"
+            - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
+              value: "false"
+
+  - it: sets no TLS, CA or proxy variables by default
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_API_SERVER_TLS_CERTIFICATE
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_TLS_CLIENTCAS
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_DATABASE_URL
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HTTP_PROXY
+          any: true
+
+  - it: emits the scan job TTL unconditionally, unlike a derived one
+    # The adapter's own default is 1h (pkg/etc/config.go), so an unset value is
+    # not a "work it out yourself" signal and the chart does not treat it as one.
+    set:
+      store.redisScanJobTTL: 24h
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+            value: "24h"

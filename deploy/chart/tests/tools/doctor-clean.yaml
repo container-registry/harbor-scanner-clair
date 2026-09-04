@@ -1,0 +1,23 @@
+---
+# A values file the doctor must stay silent about.
+redis:
+  existingSecret: harbor-scanner-clair-redis
+clair:
+  url: https://clair.clair.svc:6060
+  existingSecret: harbor-scanner-clair-database
+api:
+  tls:
+    enabled: true
+    existingSecret: harbor-scanner-clair-tls
+extraCA:
+  existingSecret: corp-ca
+# Regression guard for effective()'s precedence: extraEnv outranks the
+# config passthrough, so the deployed pod verifies certificates and the
+# doctor must judge that value, not config's tripping "true".
+config:
+  scanner:
+    tls:
+      insecure_skip_verify: true
+extraEnv:
+  - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
+    value: "false"

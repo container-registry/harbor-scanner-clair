@@ -1,0 +1,10 @@
+---
+# Adapter next to a goharbor/harbor-helm release in the same namespace.
+redis:
+  # Database 5: Harbor's own components occupy 0-4.
+  url: redis://harbor-redis:6379/5
+
+# Harbor ships no Clair. This is a server you operate; see
+# ../external-clair/ for reference manifests.
+clair:
+  url: http://clair.clair.svc:6060

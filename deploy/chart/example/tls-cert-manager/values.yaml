@@ -1,0 +1,34 @@
+---
+api:
+  tls:
+    enabled: true
+    # Written by the Certificate in extraManifests below.
+    existingSecret: harbor-scanner-clair-tls
+
+extraManifests:
+  # tpl-rendered, so .Release and .Values are available.
+  - |
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: {{ .Release.Name }}-tls
+      namespace: {{ .Release.Namespace }}
+    spec:
+      secretName: harbor-scanner-clair-tls
+      duration: 2160h
+      renewBefore: 360h
+      privateKey:
+        algorithm: ECDSA
+        size: 256
+      # Harbor connects to the Service name, so it must be a SAN. Use the
+      # chart's own fullname: it collapses to "harbor-scanner-clair" when the
+      # release is named after the chart, which "{{ .Release.Name }}-harbor-scanner-clair"
+      # would render as harbor-scanner-clair-harbor-scanner-clair.
+      dnsNames:
+        - {{ include "harbor-scanner-clair.fullname" . }}
+        - {{ include "harbor-scanner-clair.fullname" . }}.{{ .Release.Namespace }}
+        - {{ include "harbor-scanner-clair.fullname" . }}.{{ .Release.Namespace }}.svc
+      issuerRef:
+        name: harbor-ca-issuer
+        kind: Issuer
+        group: cert-manager.io

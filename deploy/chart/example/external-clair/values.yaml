@@ -1,0 +1,11 @@
+---
+# Adapter pointed at the Clair deployed by clair.yaml in this directory.
+clair:
+  url: http://clair.clair.svc:6060
+  # Only used for the vulnerability-database timestamp in /api/v1/metadata.
+  # Drop it and scanning still works, Harbor just shows no database age.
+  existingSecret: clair-database-dsn
+  existingSecretKey: databaseUrl
+
+redis:
+  url: redis://harbor-redis:6379/5
