@@ -1,0 +1,134 @@
+---
+suite: extension points
+release:
+  name: t
+tests:
+  - it: appends extraEnv last so it overrides a chart-set variable of the same name
+    templates:
+      - deployment.yaml
+    set:
+      extraEnv:
+        - name: SCANNER_LOG_LEVEL
+          value: debug
+        - name: MY_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: s
+              key: k
+    asserts:
+      # Kubernetes resolves duplicate env names to the last entry, so the
+      # override only works while extraEnv stays at the end of the list.
+      - equal:
+          path: spec.template.spec.containers[0].env[-1].name
+          value: MY_SECRET
+      - equal:
+          path: spec.template.spec.containers[0].env[-2]
+          value:
+            name: SCANNER_LOG_LEVEL
+            value: debug
+
+  - it: mounts extra volumes and sidecars
+    templates:
+      - deployment.yaml
+    set:
+      extraVolumes:
+        - name: extra
+          emptyDir: {}
+      extraVolumeMounts:
+        - name: extra
+          mountPath: /extra
+      sidecars:
+        - name: helper
+          image: busybox
+      initContainers:
+        - name: seed
+          image: "busybox:{{ .Release.Name }}"
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 2
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: helper
+      # initContainers go through tpl, so they can reference the release
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: "busybox:t"
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: extra
+            emptyDir: {}
+
+  - it: renders extra manifests, templating string entries
+    templates:
+      - extra-manifests.yaml
+    set:
+      extraManifests:
+        - |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: {{ .Release.Name }}-extra
+          data:
+            k: v
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: t-extra
+
+  - it: emits proxy variables only when they are set
+    templates:
+      - deployment.yaml
+    set:
+      proxy.httpProxy: http://proxy:3128
+      proxy.noProxy: .svc,.cluster.local
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HTTP_PROXY
+            value: http://proxy:3128
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HTTPS_PROXY
+          any: true
+
+  - it: adds lifecycle hooks verbatim
+    templates:
+      - deployment.yaml
+    set:
+      lifecycle:
+        preStop:
+          exec:
+            command: [sleep, "5"]
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value:
+            - sleep
+            - "5"
+
+  - it: reaches settings the chart has no value for, through config
+    templates:
+      - deployment.yaml
+      - configmap-env.yaml
+    set:
+      config:
+        scanner:
+          something:
+            added_later: "1"
+    asserts:
+      # The adapter is configured entirely by environment, so a setting added
+      # after this chart version needs no chart change to reach it.
+      - equal:
+          path: data.SCANNER_SOMETHING_ADDED_LATER
+          value: "1"
+        template: configmap-env.yaml
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[0].configMapRef.name
+          value: t-harbor-scanner-clair-env
+        template: deployment.yaml

@@ -1,0 +1,422 @@
+---
+# -- Values shared across the chart (and any future subchart).
+global:
+  # -- Registry override applied to every image in the chart. Wins over
+  # `image.registry`; the repository path is preserved. Set this to point an
+  # air-gapped install at a mirror in one place.
+  imageRegistry: ""
+  # -- Image pull secrets applied to every pod in the chart.
+  imagePullSecrets: []
+
+# -- Override the chart name used in resource names and labels.
+nameOverride: ""
+# -- Override the fully qualified resource name (`<release>-<chart>`).
+fullnameOverride: ""
+# -- Labels added to every rendered object.
+commonLabels: {}
+# -- Annotations added to every rendered object.
+commonAnnotations: {}
+# -- Extra raw manifests rendered with the release. Strings are passed through
+# `tpl`, so they may reference `.Values` and `.Release`.
+extraManifests: []
+
+# -- Number of adapter replicas. The adapter holds no local state - the reports
+# live in Redis and the vulnerability data in Clair - so replicas buy
+# availability and scan throughput alike.
+replicaCount: 1
+# -- Deployment revision history retained for rollbacks.
+revisionHistoryLimit: 10
+# -- Deployment update strategy. Empty means the Kubernetes default
+# (`RollingUpdate`, 25% surge and unavailable).
+strategy: {}
+# -- Grace period for a terminating pod. In-flight scans are lost on shutdown
+# regardless (the worker pool does not drain), so this only bounds how long the
+# kubelet waits before SIGKILL.
+terminationGracePeriodSeconds: 60
+
+image:
+  # -- Image registry.
+  registry: 8gears.container-registry.com
+  # -- Image repository.
+  repository: 8gcr/harbor-scanner-clair
+  # -- Image tag.
+  # @default -- `.Chart.AppVersion`
+  tag: ""
+  # -- Image digest (`sha256:...`). Wins over `tag` when set; pin this for
+  # immutable, GitOps-friendly deployments.
+  digest: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image pull secrets for this image, merged with `global.imagePullSecrets`.
+  pullSecrets: []
+
+serviceAccount:
+  # -- Create a ServiceAccount for the adapter.
+  create: true
+  # -- Name of the ServiceAccount to use.
+  # @default -- the fullname template
+  name: ""
+  # -- Annotations for the created ServiceAccount (IRSA, Workload Identity).
+  annotations: {}
+  # -- Mount the ServiceAccount token into the pod. The adapter never calls the
+  # Kubernetes API, so this stays off.
+  automountServiceAccountToken: false
+
+# -- Annotations added to the adapter pods.
+podAnnotations: {}
+# -- Labels added to the adapter pods.
+podLabels: {}
+
+# -- Pod-level security context. The image creates the `scanner` user at
+# UID/GID 10000 and owns `/home/scanner` with it.
+podSecurityContext:
+  runAsUser: 10000
+  runAsGroup: 10000
+  runAsNonRoot: true
+  fsGroup: 10000
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context. The adapter writes only to `/tmp`, which
+# is mounted, so the root filesystem stays read-only.
+securityContext:
+  privileged: false
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Resource requests and limits. The adapter transforms JSON and waits on
+# Clair; the scanning itself, and the vulnerability database with it, live in
+# the Clair server. Raise memory for very large manifests, not for scan volume.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# -- Container probes, passed through verbatim. The chart fills in
+# `scheme: HTTPS` when `api.tls.enabled` is set and no scheme is given. Set a
+# probe to `null` to drop it. Note that the adapter answers `/probe/ready` with
+# a bare 200: it checks neither Redis nor Clair.
+probes:
+  startup:
+    httpGet:
+      path: /probe/healthy
+      port: api-server
+    periodSeconds: 2
+    failureThreshold: 15
+    timeoutSeconds: 3
+  readiness:
+    httpGet:
+      path: /probe/ready
+      port: api-server
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+  liveness:
+    httpGet:
+      path: /probe/healthy
+      port: api-server
+    periodSeconds: 10
+    failureThreshold: 10
+    timeoutSeconds: 3
+
+# -- Node labels for pod assignment.
+nodeSelector: {}
+# -- Tolerations for pod assignment.
+tolerations: []
+# -- Affinity rules for pod assignment.
+affinity: {}
+# -- Topology spread constraints.
+topologySpreadConstraints: []
+# -- PriorityClass for the adapter pods.
+priorityClassName: ""
+# -- Alternative scheduler for the adapter pods.
+schedulerName: ""
+# -- Additional host aliases injected into `/etc/hosts`.
+hostAliases: []
+# -- Pod DNS policy.
+dnsPolicy: ""
+# -- Pod DNS config.
+dnsConfig: {}
+
+service:
+  # -- Service type.
+  type: ClusterIP
+  # -- Service port. Also the port the adapter listens on.
+  port: 8080
+  # -- NodePort, when `service.type` is `NodePort` or `LoadBalancer`.
+  nodePort: ""
+  # -- Static cluster IP.
+  clusterIP: ""
+  # -- Load balancer source ranges.
+  loadBalancerSourceRanges: []
+  # -- External traffic policy.
+  externalTrafficPolicy: ""
+  # -- Session affinity.
+  sessionAffinity: ""
+  # -- IP families for the Service, e.g. `[IPv4, IPv6]`. Empty follows the
+  # cluster default.
+  ipFamilies: []
+  # -- IP family policy: `SingleStack`, `PreferDualStack` or `RequireDualStack`.
+  ipFamilyPolicy: ""
+  # -- Annotations for the Service.
+  annotations: {}
+  # -- Labels for the Service.
+  labels: {}
+
+podDisruptionBudget:
+  # -- Create a PodDisruptionBudget. Only useful with `replicaCount` > 1.
+  enabled: false
+  # -- Minimum available pods. Mutually exclusive with `maxUnavailable`.
+  minAvailable: ""
+  # -- Maximum unavailable pods. Mutually exclusive with `minAvailable`.
+  maxUnavailable: 1
+  # -- `unhealthyPodEvictionPolicy` (Kubernetes >= 1.27). `AlwaysAllow` so a
+  # wedged adapter pod cannot block a node drain: an unready scan worker is not
+  # serving anyone, and holding the budget open for it only stalls the cluster.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+
+autoscaling:
+  # -- Create a HorizontalPodAutoscaler.
+  enabled: false
+  # -- Minimum replicas.
+  minReplicas: 1
+  # -- Maximum replicas.
+  maxReplicas: 5
+  # -- Target average CPU utilization, in percent. `null` drops the metric.
+  targetCPUUtilizationPercentage: 80
+  # -- Target average memory utilization, in percent. `null` drops the metric.
+  targetMemoryUtilizationPercentage: null
+  # -- Extra metrics appended to the generated ones.
+  metrics: []
+  # -- Scaling behavior.
+  behavior: {}
+
+metrics:
+  serviceMonitor:
+    # -- Create a Prometheus Operator ServiceMonitor. Requires the
+    # `monitoring.coreos.com/v1` CRD. The adapter always serves `/metrics` on
+    # the API port; there is no switch to turn the endpoint itself off.
+    enabled: false
+    # -- Namespace for the ServiceMonitor. Defaults to the release namespace.
+    namespace: ""
+    # -- Extra labels, e.g. the `release` label your Prometheus selects on.
+    labels: {}
+    # -- Extra annotations.
+    annotations: {}
+    # -- Scrape interval.
+    interval: ""
+    # -- Scrape timeout.
+    scrapeTimeout: ""
+    # -- Honor labels exposed by the target.
+    honorLabels: false
+    # -- Relabeling rules applied before scraping.
+    relabelings: []
+    # -- Relabeling rules applied to scraped samples.
+    metricRelabelings: []
+    # -- TLS config used when scraping a TLS-enabled adapter.
+    tlsConfig: {}
+
+networkPolicy:
+  # -- Create a NetworkPolicy for the adapter pods.
+  enabled: false
+  # -- Peers allowed to reach the API port. Empty allows any source; set this
+  # to the Harbor core/jobservice selectors to lock the adapter down.
+  ingress: []
+  # -- Restrict egress as well. Leave off unless you enumerate Redis, the
+  # registry, and the Clair server in `networkPolicy.egress`.
+  egressEnabled: false
+  # -- Egress rules, used when `networkPolicy.egressEnabled` is set.
+  egress: []
+
+# -- Private CA certificates to trust, on top of the system bundle. The adapter
+# is a Go program, so this covers every outbound TLS call it makes: pulling
+# image manifests from a registry with an internal CA, a TLS Redis, an HTTPS
+# Clair endpoint.
+#
+# Two mechanisms are set up together, deliberately. The bundle is mounted at
+# `/etc/scanner-clair/extra-ca` and `SSL_CERT_DIR=/etc/ssl/certs:/etc/scanner-clair/extra-ca`
+# is set, which covers a whole-bundle mount with `keys: []`; the system path is
+# listed explicitly on purpose, because Go replaces its default directory list
+# when `SSL_CERT_DIR` is set. Naming `keys` additionally emits
+# `SCANNER_TLS_CLIENTCAS`, the adapter's own list of PEM files to append to the
+# system pool.
+extraCA:
+  # -- Existing Secret holding one or more PEM certificates. Takes a cert-manager
+  # CA Secret directly.
+  existingSecret: ""
+  # -- Existing ConfigMap holding one or more PEM certificates. Mutually
+  # exclusive with `existingSecret`.
+  existingConfigMap: ""
+  # -- Keys to mount from it. Empty mounts every key and relies on
+  # `SSL_CERT_DIR`; naming keys also puts them in `SCANNER_TLS_CLIENTCAS`.
+  keys: []
+
+# -- Annotations on the Deployment object itself (not its pods). For controllers
+# that key off the workload, such as Argo CD sync waves. Pod annotations are
+# `podAnnotations`; annotations for every object are `commonAnnotations`.
+deploymentAnnotations: {}
+
+# -- Build a `dockerconfigjson` pull Secret from inline credentials, for installs
+# with no pre-existing one to reference. Prefer `image.pullSecrets` with a Secret
+# you own: the password set here is stored in the release.
+imageCredentials:
+  # -- Create the Secret and add it to the pod's `imagePullSecrets`.
+  create: false
+  # -- Registry the credentials are for.
+  # @default -- `global.imageRegistry`, else `image.registry`
+  registry: ""
+  # -- Registry username.
+  username: ""
+  # -- Registry password or token.
+  password: ""
+  # -- Registry account email, which some registries still require.
+  email: ""
+
+# -- Adapter log level: `trace`, `debug`, `info`, `warn`, `warning`, `error`.
+# Anything unrecognized falls back to `info`.
+logLevel: info
+
+api:
+  # -- Maximum duration for reading an entire request, including the body.
+  readTimeout: 15s
+  # -- Maximum duration before timing out a response write. This bounds a
+  # single HTTP response, not a scan.
+  writeTimeout: 15s
+  # -- Idle timeout for keep-alive connections.
+  idleTimeout: 60s
+  tls:
+    # -- Serve the adapter API over HTTPS. Harbor must then register the
+    # scanner with an `https://` URL. The adapter does not verify client
+    # certificates, so this is server TLS only.
+    enabled: false
+    # -- Existing `kubernetes.io/tls` Secret holding `tls.crt` and `tls.key`.
+    # Preferred over inlining PEM in values; works directly with a cert-manager
+    # Certificate. Required unless `certificate`/`key` are set.
+    existingSecret: ""
+    # -- PEM certificate, inlined into a chart-managed Secret. Ignored when
+    # `existingSecret` is set.
+    certificate: ""
+    # -- PEM private key, inlined into a chart-managed Secret. Ignored when
+    # `existingSecret` is set.
+    key: ""
+
+clair:
+  # -- Base URL of the Clair 2.x API the adapter posts layers to. This chart
+  # does not deploy Clair; Harbor stopped bundling it in 2.2, so the server is
+  # yours to operate. See `example/external-clair/`.
+  url: http://harbor-harbor-clair:6060
+  # -- PostgreSQL DSN for Clair's own database. Used for exactly one query, the
+  # `updater/last` timestamp reported as the vulnerability database age in
+  # `/api/v1/metadata`. Scanning works without it. It carries a password, so
+  # prefer `existingSecret`.
+  databaseUrl: ""
+  # -- Existing Secret holding the PostgreSQL DSN. Mutually exclusive with
+  # `databaseUrl`, and keeps the password out of the pod spec.
+  existingSecret: ""
+  # -- Key within `clair.existingSecret`.
+  existingSecretKey: databaseUrl
+
+tls:
+  # -- Skip TLS verification on every outbound connection the adapter makes -
+  # the registry and Clair both. A blunt instrument; for a private CA use
+  # `extraCA` instead.
+  insecureSkipVerify: false
+
+redis:
+  # -- Redis URL. Supports a standalone server
+  # (`redis://[:password@]host:port/db`) and Sentinel
+  # (`redis+sentinel://[:password@]host1:port1,host2:port2/monitor/db`).
+  # A password inlined here lands in the pod spec in clear text - use
+  # `existingSecret` instead.
+  url: redis://harbor-harbor-redis:6379
+  # -- Existing Secret holding the complete Redis URL. Wins over `url` and
+  # keeps the password out of the pod spec.
+  existingSecret: ""
+  # -- Key within `redis.existingSecret`.
+  existingSecretKey: url
+  pool:
+    # -- Maximum connections allocated by the pool.
+    maxActive: 5
+    # -- Maximum idle connections kept in the pool.
+    maxIdle: 5
+    # -- Idle connection lifetime. `0` keeps idle connections open forever.
+    idleTimeout: 5m
+    # -- Connection timeout.
+    connectionTimeout: 1s
+    # -- Read timeout for a single command reply.
+    readTimeout: 1s
+    # -- Write timeout for a single command.
+    writeTimeout: 1s
+
+store:
+  # -- Key namespace for scan jobs and reports.
+  redisNamespace: harbor.scanner.clair:store
+  # -- TTL for persisted scan jobs and reports. A report is unreadable once it
+  # expires, so keep it comfortably above the time Harbor takes to collect one.
+  redisScanJobTTL: 1h
+
+proxy:
+  # -- HTTP proxy URL.
+  httpProxy: ""
+  # -- HTTPS proxy URL.
+  httpsProxy: ""
+  # -- Comma-separated hosts the proxy settings do not apply to. Redis, Clair
+  # and the Harbor registry normally belong here.
+  noProxy: ""
+
+# -- Adapter configuration as a nested map, flattened into env vars in a
+# chart-managed ConfigMap and consumed with `envFrom`. Nested keys join with
+# `_` and are uppercased; lists join with `,`:
+#
+#     config:
+#       scanner:
+#         clair:
+#           url: http://clair:6060   ->   SCANNER_CLAIR_URL=http://clair:6060
+#
+# The adapter is configured entirely by environment, so this reaches every
+# setting it has - including ones added after this chart version, with no chart
+# change. The chart drops its own entry for any name claimed here, because
+# `envFrom` would otherwise lose to it.
+#
+# A ConfigMap is not secret. Credential-shaped keys are refused at render time;
+# put them in `secret` below.
+config: {}
+# -- Same notation as `config`, rendered into a chart-managed Secret instead, so
+# the values never appear in the pod spec.
+secret: {}
+
+# -- Extra environment variables, in full `EnvVar` form (so `valueFrom` works).
+# Appended last, so a name set here wins over both `config`/`secret` and the
+# chart's own entry. Full precedence, lowest to highest:
+# chart defaults < config / secret < extraEnv.
+extraEnv: []
+# -- Extra `envFrom` sources (ConfigMap/Secret references).
+extraEnvFrom: []
+# -- Extra volumes for the adapter pod.
+extraVolumes: []
+# -- Extra volume mounts for the adapter container.
+extraVolumeMounts: []
+# -- Init containers, passed through `tpl`.
+initContainers: []
+# -- Sidecar containers, passed through `tpl`.
+sidecars: []
+# -- Container lifecycle hooks.
+lifecycle: {}
+
+# -- Deep-merged into the Deployment `.spec`, for fields the chart does not
+# template (`minReadySeconds`, `progressDeadlineSeconds`, `paused`). Yours wins
+# on conflict.
+deploymentSpecOverrides: {}
+# -- Deep-merged into the pod spec, for fields the chart does not template
+# (`runtimeClassName`, `hostNetwork`, `enableServiceLinks`, `nodeName`,
+# `shareProcessNamespace`, `readinessGates`). Yours wins on conflict.
+podSpecOverrides: {}
+# -- Deep-merged into the adapter container, for fields the chart does not
+# template (`workingDir`, `terminationMessagePolicy`, `resizePolicy`). Sidecars
+# are untouched. Yours wins on conflict.
+containerOverrides: {}

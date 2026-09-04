@@ -1,0 +1,127 @@
+---
+suite: TLS
+release:
+  name: t
+tests:
+  - it: creates no TLS Secret when TLS is off
+    templates:
+      - secret-tls.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: stores inlined certificate material in a chart-managed TLS Secret
+    templates:
+      - secret-tls.yaml
+    set:
+      api.tls.enabled: true
+      api.tls.certificate: CERT
+      api.tls.key: KEY
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: type
+          value: kubernetes.io/tls
+      - equal:
+          path: metadata.name
+          value: t-harbor-scanner-clair-tls
+
+  - it: creates no TLS Secret when one already exists
+    templates:
+      - secret-tls.yaml
+    set:
+      api.tls.enabled: true
+      api.tls.existingSecret: my-tls
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: points the listener at the mounted certificate and flips the probes to HTTPS
+    templates:
+      - deployment.yaml
+    set:
+      api.tls.enabled: true
+      api.tls.existingSecret: my-tls
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_API_SERVER_TLS_CERTIFICATE
+            value: /certs/tls.crt
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_API_SERVER_TLS_KEY
+            value: /certs/tls.key
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.scheme
+          value: HTTPS
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.scheme
+          value: HTTPS
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.scheme
+          value: HTTPS
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: certs
+            secret:
+              secretName: my-tls
+
+  - it: leaves an explicit probe scheme alone
+    templates:
+      - deployment.yaml
+    set:
+      api.tls.enabled: true
+      api.tls.existingSecret: my-tls
+      probes.liveness.httpGet.scheme: HTTP
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.scheme
+          value: HTTP
+
+  - it: offers no mutual TLS, because the adapter cannot verify client certificates
+    templates:
+      - deployment.yaml
+    set:
+      api.tls.enabled: true
+      api.tls.existingSecret: my-tls
+    asserts:
+      # pkg/http/api/server.go never sets ClientCAs or ClientAuth, so an
+      # emitted SCANNER_API_SERVER_CLIENT_CAS would promise an mTLS listener
+      # that the adapter does not build.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_API_SERVER_CLIENT_CAS
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: client-cas
+          any: true
+
+  - it: rejects a clientCAs block left over from another adapter's values
+    templates:
+      - deployment.yaml
+    set:
+      api.tls.enabled: true
+      api.tls.existingSecret: my-tls
+      api.tls.clientCAs.existingSecret: ca
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties 'clientCAs' not allowed"
+
+  - it: switches off outbound verification only when asked
+    templates:
+      - deployment.yaml
+    set:
+      tls.insecureSkipVerify: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_TLS_INSECURE_SKIP_VERIFY
+            value: "true"

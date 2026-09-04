@@ -1,0 +1,126 @@
+---
+# The deep-merge escape hatches for fields the chart does not template. The
+# merge only runs when an override is set, so these also guard that the opt-in
+# path does not disturb what the chart already rendered.
+suite: merge escape hatches
+release:
+  name: t
+templates:
+  - deployment.yaml
+tests:
+  - it: reaches Deployment spec fields the chart does not template
+    set:
+      deploymentSpecOverrides:
+        minReadySeconds: 10
+        progressDeadlineSeconds: 300
+    asserts:
+      - equal:
+          path: spec.minReadySeconds
+          value: 10
+      - equal:
+          path: spec.progressDeadlineSeconds
+          value: 300
+      # The merge must not disturb what the chart rendered
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.revisionHistoryLimit
+          value: 10
+
+  - it: reaches pod spec fields the chart does not template
+    set:
+      podSpecOverrides:
+        runtimeClassName: gvisor
+        enableServiceLinks: false
+        shareProcessNamespace: true
+    asserts:
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: gvisor
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: t-harbor-scanner-clair
+
+  - it: wins over a field the chart does set
+    set:
+      podSpecOverrides:
+        terminationGracePeriodSeconds: 300
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 300
+
+  - it: reaches container fields the chart does not template
+    set:
+      containerOverrides:
+        workingDir: /home/scanner
+        terminationMessagePolicy: FallbackToLogsOnError
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].workingDir
+          value: /home/scanner
+      - equal:
+          path: spec.template.spec.containers[0].terminationMessagePolicy
+          value: FallbackToLogsOnError
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: main
+
+  - it: merges only the adapter container and leaves sidecars alone
+    set:
+      containerOverrides:
+        workingDir: /home/scanner
+      sidecars:
+        - name: helper
+          image: busybox
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 2
+      - equal:
+          path: spec.template.spec.containers[0].workingDir
+          value: /home/scanner
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: helper
+      - notExists:
+          path: spec.template.spec.containers[1].workingDir
+
+  - it: preserves the full env list through the merge
+    set:
+      podSpecOverrides:
+        runtimeClassName: gvisor
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_REDIS_URL
+            value: "redis://harbor-harbor-redis:6379"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_URL
+            value: "http://harbor-harbor-clair:6060"
+
+  - it: combines every hatch at once
+    set:
+      deploymentSpecOverrides:
+        minReadySeconds: 5
+      podSpecOverrides:
+        runtimeClassName: gvisor
+      containerOverrides:
+        workingDir: /tmp
+    asserts:
+      - equal:
+          path: spec.minReadySeconds
+          value: 5
+      - equal:
+          path: spec.template.spec.runtimeClassName
+          value: gvisor
+      - equal:
+          path: spec.template.spec.containers[0].workingDir
+          value: /tmp

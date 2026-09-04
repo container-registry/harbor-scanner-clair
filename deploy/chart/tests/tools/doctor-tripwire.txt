@@ -1,0 +1,9 @@
+== tests/tools/doctor-tripwire.yaml
+   WARN redis.url: embeds a password, which lands in the pod spec in clear text. Use redis.existingSecret.
+   WARN clair.databaseUrl: is a PostgreSQL DSN inlined into the release, password included. Use clair.existingSecret for anything longer-lived than a test install.
+   WARN api.tls.key: inlines a private key into the release. Use api.tls.existingSecret, which takes a cert-manager Secret directly.
+   WARN imageCredentials.password: is stored in the release. Prefer image.pullSecrets with a Secret you own.
+   ERROR podDisruptionBudget.minAvailable: 1 against 1 replica(s) leaves no pod evictable, which blocks node drains indefinitely.
+   WARN podDisruptionBudget.enabled: with replicaCount 1 protects nothing.
+   ERROR tls.insecureSkipVerify: is set while extraCA mounts a CA bundle. Verification is off, so the bundle is never consulted; keep one or the other.
+   WARN clair.url: is plaintext while the adapter's own API serves TLS. Scan requests are encrypted, the layer traffic to Clair is not.

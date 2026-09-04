@@ -1,0 +1,135 @@
+---
+# The Clair backend: the one thing this adapter cannot be configured without.
+# The chart does not deploy Clair, so every one of these is about pointing at
+# a server someone else runs.
+suite: clair backend
+release:
+  name: t
+tests:
+  - it: points the adapter at the configured Clair endpoint
+    templates:
+      - deployment.yaml
+    set:
+      clair.url: http://clair.clair.svc:6060
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_URL
+            value: "http://clair.clair.svc:6060"
+
+  - it: keeps the adapter's own default when nothing is set
+    templates:
+      - deployment.yaml
+    asserts:
+      # Harbor removed its bundled Clair in 2.2, so this Service does not exist
+      # in a current Harbor install. It stays the default only because it is
+      # the adapter's compiled-in one (pkg/etc/config.go).
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_URL
+            value: "http://harbor-harbor-clair:6060"
+
+  - it: rejects a Clair URL that is not HTTP
+    templates:
+      - deployment.yaml
+    set:
+      clair.url: tcp://clair:6060
+    asserts:
+      - failedTemplate:
+          errorPattern: "at '/clair/url'"
+
+  - it: refuses an empty Clair URL with a sentence about operating one
+    templates:
+      - validate-values.yaml
+    set:
+      clair.url: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "clair.url must name the Clair 2.x API endpoint the adapter posts layers to; the chart does not deploy Clair."
+
+  - it: sets no database DSN by default
+    templates:
+      - deployment.yaml
+    asserts:
+      # Optional: it is read for one query, the vulnerability database
+      # timestamp. Scanning works without it.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_DATABASE_URL
+          any: true
+
+  - it: creates no Secret when no database DSN is configured
+    templates:
+      - secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: stores an inlined DSN in a chart-managed Secret and reads it back
+    templates:
+      - secret.yaml
+      - deployment.yaml
+    set:
+      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+    asserts:
+      - equal:
+          path: data.databaseUrl
+          value: cG9zdGdyZXM6Ly9jbGFpcjpwd0BkYjo1NDMyL2NsYWly
+        template: secret.yaml
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: t-harbor-scanner-clair
+                key: databaseUrl
+        template: deployment.yaml
+
+  - it: reads the DSN from an existing Secret and key
+    templates:
+      - deployment.yaml
+    set:
+      clair.existingSecret: my-dsn
+      clair.existingSecretKey: dsn
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: my-dsn
+                key: dsn
+
+  - it: creates no Secret when the DSN comes from an existing one
+    templates:
+      - secret.yaml
+    set:
+      clair.existingSecret: my-dsn
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: refuses a DSN that is both inlined and externally owned
+    templates:
+      - validate-values.yaml
+    set:
+      clair.existingSecret: my-dsn
+      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+    asserts:
+      - failedTemplate:
+          errorMessage: "Set either clair.existingSecret or clair.databaseUrl, not both."
+
+  - it: refuses an existing Secret with no key named
+    templates:
+      - validate-values.yaml
+    set:
+      clair.existingSecret: my-dsn
+      clair.existingSecretKey: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "clair.existingSecretKey must name the key holding the Clair database DSN in clair.existingSecret."

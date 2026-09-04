@@ -1,0 +1,19 @@
+# Trivy misconfiguration suppressions for the rendered chart.
+#
+# The CI gate is `--severity HIGH,CRITICAL`, and the default render currently
+# has none, so this file holds no suppressions. It is not empty of purpose: the
+# LOW/MEDIUM findings below are deliberate, and anyone lowering the threshold
+# should read this before silencing them.
+#
+#   KSV-0011  CPU not limited. Deliberate. The adapter's work is a poll loop
+#             against Clair; throttling it delays reports without making
+#             anything safer. Set resources.limits.cpu if your platform
+#             requires one.
+#   KSV-0020  Runs with UID <= 10000. The adapter runs as exactly 10000, which
+#             is what the image's /home/scanner tree is owned by.
+#   KSV-0021  Runs with GID <= 10000. Same reason.
+#   KSV-0110  Workloads in the default namespace. An artifact of scanning a
+#             `helm template` render with no --namespace, not of the chart.
+#   KSV-0125  Restrict container images to trusted registries. The default
+#             registry is ours; air-gapped users repoint it with
+#             global.imageRegistry.

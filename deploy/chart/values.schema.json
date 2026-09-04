@@ -1,0 +1,695 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "harbor-scanner-clair values",
+  "description": "Values for the harbor-scanner-clair chart. The root is closed (additionalProperties: false), so a typo'd or removed top-level key fails the render instead of being silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "No-op for standalone installs. Exists so a parent chart can gate this chart with a dependency condition (e.g. `condition: clair.enabled`): Helm passes the flag into the subchart's values, and the strict schema must accept it."
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "$comment": "Deliberately open: Helm shares the parent chart's entire `global` map with every subchart, so as a dependency this chart receives global keys it has never heard of and must not reject them.",
+      "properties": {
+        "imageRegistry": {
+          "type": "string",
+          "description": "Registry override for every image; wins over image.registry."
+        },
+        "imagePullSecrets": {
+          "type": "array",
+          "description": "Pull secrets added to every pod."
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "commonLabels": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "commonAnnotations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "extraManifests": {
+      "type": "array"
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "revisionHistoryLimit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "description": "Defaults to .Chart.AppVersion when empty."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^$|^sha256:[a-f0-9]{64}$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "pullSecrets": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "repository"
+      ]
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "automountServiceAccountToken": {
+          "type": "boolean"
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "securityContext": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startup": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Kubernetes probe spec, passed through verbatim; null drops the probe."
+        },
+        "readiness": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Kubernetes probe spec, passed through verbatim; null drops the probe."
+        },
+        "liveness": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Kubernetes probe spec, passed through verbatim; null drops the probe."
+        }
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "topologySpreadConstraints": {
+      "type": "array"
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "schedulerName": {
+      "type": "string"
+    },
+    "hostAliases": {
+      "type": "array"
+    },
+    "dnsPolicy": {
+      "type": "string",
+      "enum": [
+        "",
+        "ClusterFirst",
+        "ClusterFirstWithHostNet",
+        "Default",
+        "None"
+      ]
+    },
+    "dnsConfig": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "nodePort": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            {
+              "type": "string",
+              "const": ""
+            }
+          ]
+        },
+        "clusterIP": {
+          "type": "string"
+        },
+        "loadBalancerSourceRanges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "externalTrafficPolicy": {
+          "type": "string",
+          "enum": [
+            "",
+            "Cluster",
+            "Local"
+          ]
+        },
+        "sessionAffinity": {
+          "type": "string",
+          "enum": [
+            "",
+            "None",
+            "ClientIP"
+          ]
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "ipFamilies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "IPv4",
+              "IPv6"
+            ]
+          }
+        },
+        "ipFamilyPolicy": {
+          "type": "string",
+          "enum": [
+            "",
+            "SingleStack",
+            "PreferDualStack",
+            "RequireDualStack"
+          ]
+        }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "maxUnavailable": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "unhealthyPodEvictionPolicy": {
+          "type": "string",
+          "enum": [
+            "",
+            "IfHealthyBudget",
+            "AlwaysAllow"
+          ]
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetCPUUtilizationPercentage": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targetMemoryUtilizationPercentage": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metrics": {
+          "type": "array"
+        },
+        "behavior": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "$comment": "No `enabled`: the adapter serves /metrics from promhttp.Handler() unconditionally (pkg/http/api/v1/handler.go), so there is nothing for the chart to switch.",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^$|^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+            },
+            "scrapeTimeout": {
+              "type": "string",
+              "pattern": "^$|^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+            },
+            "honorLabels": {
+              "type": "boolean"
+            },
+            "relabelings": {
+              "type": "array"
+            },
+            "metricRelabelings": {
+              "type": "array"
+            },
+            "tlsConfig": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingress": {
+          "type": "array"
+        },
+        "egressEnabled": {
+          "type": "boolean"
+        },
+        "egress": {
+          "type": "array"
+        }
+      }
+    },
+    "extraCA": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "existingConfigMap": {
+          "type": "string"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "deploymentAnnotations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "imageCredentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "registry": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        }
+      }
+    },
+    "logLevel": {
+      "type": "string",
+      "enum": [
+        "trace",
+        "debug",
+        "info",
+        "warn",
+        "warning",
+        "error",
+        "fatal",
+        "panic"
+      ]
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+        },
+        "writeTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+        },
+        "idleTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "$comment": "No clientCAs: the adapter's API server never sets ClientCAs or ClientAuth (pkg/http/api/server.go), so mutual TLS is not something this chart can switch on.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "certificate": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "clair": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "$comment": "Empty is allowed here so templates/validate-values.yaml can answer with a sentence about operating Clair yourself, which is the actual mistake; the pattern still catches a wrong scheme.",
+          "type": "string",
+          "pattern": "^$|^https?://"
+        },
+        "databaseUrl": {
+          "type": "string"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "existingSecretKey": {
+          "type": "string"
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "insecureSkipVerify": {
+          "type": "boolean"
+        }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^$|^rediss?(\\+sentinel)?://"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "existingSecretKey": {
+          "type": "string"
+        },
+        "pool": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxActive": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxIdle": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "idleTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+            },
+            "connectionTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+            },
+            "readTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+            },
+            "writeTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+            }
+          }
+        }
+      }
+    },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "redisNamespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redisScanJobTTL": {
+          "$comment": "Not nullable and not empty: the chart emits SCANNER_STORE_REDIS_SCAN_JOB_TTL unconditionally, and an empty value would reach time.ParseDuration and fail the adapter at startup.",
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+        }
+      }
+    },
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "httpProxy": {
+          "type": "string"
+        },
+        "httpsProxy": {
+          "type": "string"
+        },
+        "noProxy": {
+          "type": "string"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Adapter config as a nested map, flattened into env vars in a ConfigMap."
+    },
+    "secret": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Same as config, rendered into a Secret so values stay out of the pod spec."
+    },
+    "extraEnv": {
+      "type": "array"
+    },
+    "extraEnvFrom": {
+      "type": "array"
+    },
+    "extraVolumes": {
+      "type": "array"
+    },
+    "extraVolumeMounts": {
+      "type": "array"
+    },
+    "initContainers": {
+      "type": "array"
+    },
+    "sidecars": {
+      "type": "array"
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "deploymentSpecOverrides": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Deep-merged into the Deployment .spec."
+    },
+    "podSpecOverrides": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Deep-merged into the pod spec."
+    },
+    "containerOverrides": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Deep-merged into the adapter container."
+    }
+  }
+}

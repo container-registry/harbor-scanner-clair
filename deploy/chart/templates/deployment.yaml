@@ -1,0 +1,209 @@
+{{- define "harbor-scanner-clair.deployment" -}}
+{{- $fullname := include "harbor-scanner-clair.fullname" . -}}
+{{- $tls := include "harbor-scanner-clair.tls.enabled" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ include "harbor-scanner-clair.namespace" . }}
+  labels:
+    {{- include "harbor-scanner-clair.labels" . | nindent 4 }}
+  {{- with (include "harbor-scanner-clair.annotations" (dict "root" . "local" .Values.deploymentAnnotations)) }}
+  annotations:
+    {{- . | trim | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "harbor-scanner-clair.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- /* Roll the pods when chart-managed config material changes. Hashing
+              the material itself rather than the rendered templates keeps the
+              annotation stable against unrelated template edits - and a Secret
+              the chart does not own (the existingSecret family) is deliberately
+              not covered: the chart cannot see its contents. */}}
+        checksum/config: {{ printf "%s|%s|%s|%s|%s" .Values.clair.databaseUrl .Values.api.tls.certificate .Values.api.tls.key (toYaml (.Values.config | default dict)) (toYaml (.Values.secret | default dict)) | sha256sum }}
+        {{- with (include "harbor-scanner-clair.annotations" (dict "root" . "local" .Values.podAnnotations)) }}
+        {{- . | trim | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "harbor-scanner-clair.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with (include "harbor-scanner-clair.imagePullSecrets" .) }}
+      imagePullSecrets:
+        {{- . | trim | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "harbor-scanner-clair.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.schedulerName }}
+      schedulerName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.dnsPolicy }}
+      dnsPolicy: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: main
+          image: {{ include "harbor-scanner-clair.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.config .Values.secret .Values.extraEnvFrom }}
+          envFrom:
+            {{- if .Values.config }}
+            - configMapRef:
+                name: {{ $fullname }}-env
+            {{- end }}
+            {{- if .Values.secret }}
+            - secretRef:
+                name: {{ $fullname }}-env
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          env:
+            {{- include "harbor-scanner-clair.env" . | nindent 12 }}
+          ports:
+            - name: api-server
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          {{- with .Values.probes.startup }}
+          startupProbe:
+            {{- include "harbor-scanner-clair.probe" (dict "root" $ "probe" .) | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.liveness }}
+          livenessProbe:
+            {{- include "harbor-scanner-clair.probe" (dict "root" $ "probe" .) | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.readiness }}
+          readinessProbe:
+            {{- include "harbor-scanner-clair.probe" (dict "root" $ "probe" .) | nindent 12 }}
+          {{- end }}
+          {{- with .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- /* readOnlyRootFilesystem: the adapter still needs a writable
+                  temporary directory. */}}
+            - name: tmp
+              mountPath: /tmp
+            {{- if $tls }}
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+            {{- end }}
+            {{- with (include "harbor-scanner-clair.extraCA.volumeMount" .) }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.sidecars }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $tls }}
+        - name: certs
+          secret:
+            secretName: {{ include "harbor-scanner-clair.tls.secretName" . }}
+        {{- end }}
+        {{- with (include "harbor-scanner-clair.extraCA.volume" .) }}
+        {{- . | trim | nindent 8 }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}
+
+{{/*
+Escape hatches. The chart cannot template every field of a Deployment, a pod
+spec and a container, so these deep-merge over the rendered object for the
+fields it does not expose (runtimeClassName, hostNetwork, minReadySeconds,
+progressDeadlineSeconds, ...).
+
+The merge only runs when an override is actually set. That keeps the default
+render byte-identical and in template order; only an install that opts in pays
+the re-marshalling (which sorts keys, but stays deterministic, so GitOps
+engines still see no drift).
+*/}}
+{{- $rendered := include "harbor-scanner-clair.deployment" . -}}
+{{- if or .Values.deploymentSpecOverrides .Values.podSpecOverrides .Values.containerOverrides -}}
+{{- $object := $rendered | fromYaml -}}
+{{- $spec := $object.spec -}}
+{{- with .Values.deploymentSpecOverrides -}}
+{{- $spec = mustMergeOverwrite $spec (deepCopy .) -}}
+{{- end -}}
+{{- $podSpec := $spec.template.spec -}}
+{{- with .Values.podSpecOverrides -}}
+{{- $podSpec = mustMergeOverwrite $podSpec (deepCopy .) -}}
+{{- end -}}
+{{- with .Values.containerOverrides -}}
+{{- /* Lists are replaced, not merged, so the adapter container is merged by
+      hand and the sidecars behind it are carried over untouched. */ -}}
+{{- $containers := $podSpec.containers -}}
+{{- $main := mustMergeOverwrite (index $containers 0) (deepCopy .) -}}
+{{- $_ := set $podSpec "containers" (concat (list $main) (rest $containers)) -}}
+{{- end -}}
+{{- $_ := set $spec.template "spec" $podSpec -}}
+{{- $_ := set $object "spec" $spec -}}
+{{- $rendered = toYaml $object -}}
+{{- end -}}
+{{ $rendered }}

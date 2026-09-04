@@ -1,0 +1,24 @@
+---
+# Trust an internal CA for the registry, Redis, Clair, and anything else the
+# adapter dials. Mounted at /etc/scanner-clair/extra-ca, with SSL_CERT_DIR
+# listing both it and the system bundle.
+extraCA:
+  existingSecret: corp-ca
+  # Naming keys does two things: it mounts only those keys, and it puts their
+  # paths in SCANNER_TLS_CLIENTCAS, which the adapter reads and appends to the
+  # system pool itself. Leave it empty for a whole-bundle mount and rely on
+  # SSL_CERT_DIR alone.
+  keys:
+    - ca.crt
+
+redis:
+  url: rediss://harbor-redis:6379/5
+
+clair:
+  url: https://clair.clair.svc:6060
+
+# The CA above is what makes those HTTPS calls verify. insecureSkipVerify would
+# skip verification for every one of them instead - a different, much blunter
+# thing, and not what this example is for.
+tls:
+  insecureSkipVerify: false

@@ -1,0 +1,30 @@
+{{ .Chart.Name }} {{ .Chart.Version }} (adapter {{ .Values.image.tag | default .Chart.AppVersion }}) is installed as release {{ .Release.Name }}.
+
+Register the adapter in Harbor under Administration -> Interrogation Services ->
+Scanners -> NEW SCANNER, with the endpoint:
+
+  {{ ternary "https" "http" (ne (include "harbor-scanner-clair.tls.enabled" .) "") }}://{{ include "harbor-scanner-clair.fullname" . }}.{{ include "harbor-scanner-clair.namespace" . }}.svc:{{ .Values.service.port }}
+
+Check that it answers:
+
+  kubectl -n {{ include "harbor-scanner-clair.namespace" . }} run scanner-probe --rm -it --restart=Never --image=curlimages/curl -- \
+    curl -sS{{ if include "harbor-scanner-clair.tls.enabled" . }} -k{{ end }} {{ ternary "https" "http" (ne (include "harbor-scanner-clair.tls.enabled" .) "") }}://{{ include "harbor-scanner-clair.fullname" . }}.{{ include "harbor-scanner-clair.namespace" . }}.svc:{{ .Values.service.port }}/api/v1/metadata
+
+This chart does not deploy Clair. The adapter posts image layers to the Clair
+2.x API at {{ .Values.clair.url }} and polls it for results, so nothing works
+until that endpoint is reachable from this namespace.
+
+NOTE: /probe/ready returns 200 unconditionally. It verifies neither Redis nor
+Clair, so a Ready pod is not evidence that either is reachable.
+{{- if and (not .Values.redis.existingSecret) (regexMatch "^rediss?(\\+sentinel)?://[^/@]*:[^/@]+@" .Values.redis.url) }}
+
+WARNING: redis.url embeds a password, which is now visible in the pod spec to
+anyone who can read Pods in this namespace. Move the URL into a Secret and set
+redis.existingSecret instead.
+{{- end }}
+{{- if and .Values.clair.databaseUrl (not .Values.clair.existingSecret) }}
+
+NOTE: clair.databaseUrl was inlined into values and is stored in the
+chart-managed Secret {{ include "harbor-scanner-clair.fullname" . }}. It is a PostgreSQL DSN carrying a
+password; for GitOps, put it in your own Secret and set clair.existingSecret.
+{{- end }}
