@@ -42,23 +42,52 @@ jobs:
       registry_address: ${{ vars.REGISTRY_ADDRESS || '8gears.container-registry.com' }}
       registry_project: ${{ vars.REGISTRY_PROJECT || '8gcr' }}
 
-  # Hook: the Helm chart release jobs (`release-please-chart` and
-  # `publish-helm-chart`) belong here once the chart ships.
-  #
-  # The chart gets its own release line, scoped to deploy/chart by its own
-  # config and manifest, so a chart fix does not force an adapter release (and
-  # an adapter release does not republish an unchanged chart). It has to be a
-  # SEPARATE release-please instance rather than a second package in the adapter
-  # manifest: adding a package switches every output to the "<path>--<name>"
-  # form, which would break the adapter jobs above that read the unprefixed
-  # outputs. Both lines' config and manifest live in .release-please/, which the
-  # adapter line excludes: it filters by directory prefix only, so a chart-only
-  # commit editing a chart config file at the repo root would land in the
-  # adapter changelog too.
-  #
-  # The chart publish job must grant `contents: write` at this call site: a
-  # reusable workflow is capped by the caller's grant, so the write its
-  # `gh release edit` needs cannot be granted inside the reusable workflow.
+  release-please-chart:
+    name: Release Please (chart)
+    # The Helm chart has its own release line, scoped to deploy/chart by its own
+    # config and manifest, so a chart fix does not force an adapter release (and
+    # an adapter release does not republish an unchanged chart). Kept as a
+    # SEPARATE release-please instance rather than a second package in the
+    # adapter manifest: adding a package switches every output to the
+    # "<path>--<name>" form, which would break the adapter jobs that read the
+    # unprefixed outputs. Both lines' config and manifest live in
+    # .release-please/, which the adapter line excludes: it filters by directory
+    # prefix only, so a chart-only commit editing a chart config file at the
+    # repo root would land in the adapter changelog too.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs['deploy/chart--release_created'] }}
+      tag_name: ${{ steps.release.outputs['deploy/chart--tag_name'] }}
+      version: ${{ steps.release.outputs['deploy/chart--version'] }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: .release-please/config-chart.json
+          manifest-file: .release-please/manifest-chart.json
+
+  publish-helm-chart:
+    name: Publish Helm Chart
+    # Driven by the chart's own release line, not the adapter's. The chart
+    # references the adapter image by its appVersion, which a prior adapter
+    # release must already have published, so this does not wait on the image
+    # build.
+    needs: [release-please-chart]
+    if: ${{ needs.release-please-chart.outputs.release_created == 'true' }}
+    permissions:
+      # A reusable workflow is capped by the caller's grant, so the write the
+      # publish job needs for `gh release edit` has to be granted here.
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/publish-chart.yml
+    with:
+      tag_name: ${{ needs.release-please-chart.outputs.tag_name }}
+      registry_address: ${{ vars.REGISTRY_ADDRESS || '8gears.container-registry.com' }}
+      registry_project: ${{ vars.REGISTRY_PROJECT || '8gcr' }}
 
   publish-binaries:
     name: Publish Release Binaries
@@ -147,7 +176,20 @@ jobs:
             echo "  ${REGISTRY}/harbor-scanner-clair@${IMAGE_DIGEST}"
             echo "\`\`\`"
             echo ""
-            # Hook: the "## Helm Chart" section goes here once the chart ships.
+            echo "## Helm Chart"
+            echo ""
+            # The chart has its own release line (chart-v* tags), so no chart
+            # version is pinned here: it would go stale the moment either line
+            # moves without the other.
+            echo "The chart is released separately - see the [\`chart-v*\` releases](https://github.com/${GH_REPO}/releases?q=chart-v)."
+            echo "To deploy this adapter version with the latest chart:"
+            echo ""
+            echo "\`\`\`sh"
+            echo "helm install harbor-scanner-clair \\"
+            echo "  oci://${REGISTRY}/charts/harbor-scanner-clair \\"
+            echo "  --set image.tag=${TAG_NAME}"
+            echo "\`\`\`"
+            echo ""
             echo "## Binaries"
             echo ""
             echo "Static \`linux/amd64\` and \`linux/arm64\` binaries are attached to this release"
