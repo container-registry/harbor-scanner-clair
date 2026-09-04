@@ -1,0 +1,163 @@
+---
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "deploy/chart/**"
+      - "taskfile/helm.yml"
+      - "LICENSE"
+      - "NOTICE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "deploy/chart/**"
+      - "taskfile/helm.yml"
+      - "LICENSE"
+      - "NOTICE"
+  schedule:
+    # Weekly vulnerability sweep of main (only the vuln-check job runs)
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+# The event name is part of the group so the weekly scheduled run cannot
+# cancel an in-flight push run on main (or vice versa).
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Binaries
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Cross-compile all release platforms
+        run: task build PLATFORMS=linux/amd64,linux/arm64
+
+  test-unit:
+    name: Unit Tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run unit tests
+        run: task test
+
+  test-integration:
+    name: Integration Tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run integration tests
+        run: task test:integration
+
+  image:
+    name: Image Build
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      # pr-image.yml is skipped for forks and dependabot, so this is the only
+      # gate that proves the Dockerfile still builds on those PRs.
+      - name: Build the image locally
+        run: task image:local
+      - name: Assert the image does not run as root
+        run: |
+          user=$(docker image inspect "harbor-scanner-clair:$(git describe --tags --always --dirty)" \
+                   --format '{{.Config.User}}')
+          case "${user}" in
+            ""|root|0|0:0) echo "::error::image runs as root (Config.User='${user}')"; exit 1 ;;
+          esac
+          echo "Config.User=${user}"
+
+  lint-go:
+    name: Go Lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run Go lint
+        run: task lint:local
+
+  lint-yaml:
+    name: YAML Lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          go: "false"
+      - name: Run YAML lint
+        run: task lint:yaml
+
+  vuln-check:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    # pull-requests: write is only used by the sticky-comment step below, and
+    # covers issue comments on pull requests, so issues: write is not needed.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      # Findings are a result, not a scan failure: this step captures the
+      # govulncheck exit code instead of propagating it, and exposes the counts
+      # as step outputs. "Enforce scanner health" below turns a broken scan into
+      # a job failure.
+      - name: Run govulncheck and render reports
+        id: report
+        run: task vuln-report
+
+      # Fork pull requests get a read-only token, so commenting would only
+      # produce a confusing failure.
+      - name: Update pull request comment
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FIXABLE_COUNT: ${{ steps.report.outputs.fixable-count }}
+        run: .github/scripts/vulnerability-comment.sh
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: vulnerability-check
+          path: vulnerability-check/
+          if-no-files-found: warn
+
+      - name: Enforce scanner health
+        run: task vuln-report:check
