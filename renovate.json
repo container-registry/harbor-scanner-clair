@@ -1,0 +1,46 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Only the versions.env pins are Renovate-managed; dependabot keeps gomod and github-actions.",
+  "enabledManagers": ["custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Pins in versions.env annotated with a `# renovate:` comment",
+      "fileMatch": ["^versions\\.env$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: versioning=(?<versioning>\\S+?))?(?: extractVersion=(?<extractVersion>\\S+?))?\\n[A-Z0-9_]+=(?<currentValue>\\S+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The base image and lprobe ship inside the adapter image, so a bump is an adapter patch release",
+      "matchDepNames": ["alpine", "ghcr.io/fivexl/lprobe"],
+      "semanticCommits": "enabled",
+      "semanticCommitType": "fix"
+    },
+    {
+      "description": "Tooling pins never reach the image; keep them out of the changelog",
+      "matchDepNames": [
+        "golangci/golangci-lint",
+        "golang.org/x/vuln",
+        "go-task/task",
+        "yamllint",
+        "helm/helm",
+        "helm-unittest/helm-unittest",
+        "norwoodj/helm-docs",
+        "helm/chart-testing",
+        "stackrox/kube-linter",
+        "artifacthub/hub",
+        "oras-project/oras",
+        "ajv-cli",
+        "node",
+        "yamale",
+        "pyyaml",
+        "aquasecurity/trivy"
+      ],
+      "semanticCommits": "enabled",
+      "semanticCommitType": "ci"
+    }
+  ]
+}
