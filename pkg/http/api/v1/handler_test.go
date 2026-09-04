@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
-	"github.com/goharbor/harbor-scanner-clair/pkg/http/api"
-	"github.com/goharbor/harbor-scanner-clair/pkg/job"
-	"github.com/goharbor/harbor-scanner-clair/pkg/mock"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/http/api"
+	"github.com/container-registry/harbor-scanner-clair/pkg/job"
+	"github.com/container-registry/harbor-scanner-clair/pkg/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

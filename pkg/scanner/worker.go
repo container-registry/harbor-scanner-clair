@@ -1,9 +1,9 @@
 package scanner
 
 import (
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
-	"github.com/goharbor/harbor-scanner-clair/pkg/job"
-	"github.com/goharbor/harbor-scanner-clair/pkg/persistence"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/job"
+	"github.com/container-registry/harbor-scanner-clair/pkg/persistence"
 	log "github.com/sirupsen/logrus"
 )
 

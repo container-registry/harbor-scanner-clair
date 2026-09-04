@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/etc"
+	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
 	_ "github.com/lib/pq"
 	"github.com/xo/dburl"
 )

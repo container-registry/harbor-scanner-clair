@@ -2,9 +2,9 @@ package scanner
 
 import (
 	"fmt"
-	"github.com/goharbor/harbor-scanner-clair/pkg/clair"
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
-	"github.com/goharbor/harbor-scanner-clair/pkg/registry"
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
 	log "github.com/sirupsen/logrus"
 )
 
