@@ -1,7 +1,7 @@
 package job
 
 import (
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 )
 
 type Status int

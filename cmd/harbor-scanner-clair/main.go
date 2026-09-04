@@ -7,16 +7,16 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/redisx"
+	"github.com/container-registry/harbor-scanner-clair/pkg/redisx"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/clair"
-	"github.com/goharbor/harbor-scanner-clair/pkg/etc"
-	"github.com/goharbor/harbor-scanner-clair/pkg/http/api"
-	v1 "github.com/goharbor/harbor-scanner-clair/pkg/http/api/v1"
-	"github.com/goharbor/harbor-scanner-clair/pkg/persistence/redis"
-	"github.com/goharbor/harbor-scanner-clair/pkg/registry"
-	"github.com/goharbor/harbor-scanner-clair/pkg/scanner"
-	"github.com/goharbor/harbor-scanner-clair/pkg/work"
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
+	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
+	"github.com/container-registry/harbor-scanner-clair/pkg/http/api"
+	v1 "github.com/container-registry/harbor-scanner-clair/pkg/http/api/v1"
+	"github.com/container-registry/harbor-scanner-clair/pkg/persistence/redis"
+	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
+	"github.com/container-registry/harbor-scanner-clair/pkg/scanner"
+	"github.com/container-registry/harbor-scanner-clair/pkg/work"
 	log "github.com/sirupsen/logrus"
 )
 

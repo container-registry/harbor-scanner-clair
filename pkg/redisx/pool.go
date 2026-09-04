@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/etc"
+	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
 
 	"github.com/FZambia/sentinel"
 	"github.com/gomodule/redigo/redis"

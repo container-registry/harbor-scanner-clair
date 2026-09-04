@@ -1,8 +1,8 @@
 package mock
 
 import (
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
-	"github.com/goharbor/harbor-scanner-clair/pkg/job"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/job"
 	"github.com/stretchr/testify/mock"
 )
 

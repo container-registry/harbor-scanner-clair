@@ -3,7 +3,7 @@ package mock
 import (
 	"time"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/clair"
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/stretchr/testify/mock"
 )
 

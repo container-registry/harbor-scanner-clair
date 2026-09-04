@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/goharbor/harbor-scanner-clair/pkg/etc"
+	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
 	"github.com/stretchr/testify/assert"
 )
 

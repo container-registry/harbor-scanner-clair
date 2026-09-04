@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v6"
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"github.com/xo/dburl"

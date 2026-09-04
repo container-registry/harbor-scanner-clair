@@ -1,10 +1,10 @@
 package scanner
 
 import (
-	"github.com/goharbor/harbor-scanner-clair/pkg/harbor"
-	"github.com/goharbor/harbor-scanner-clair/pkg/job"
-	"github.com/goharbor/harbor-scanner-clair/pkg/persistence"
-	"github.com/goharbor/harbor-scanner-clair/pkg/work"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/container-registry/harbor-scanner-clair/pkg/job"
+	"github.com/container-registry/harbor-scanner-clair/pkg/persistence"
+	"github.com/container-registry/harbor-scanner-clair/pkg/work"
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 )
