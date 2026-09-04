@@ -1,0 +1,41 @@
+---
+name: Upstream Cherry-Pick
+
+# Upstream (goharbor/harbor-scanner-clair) has had no commit on master since
+# 2020-08-20 and its head is this fork's base commit. There is deliberately no
+# cron: a scheduled run would fetch the whole history twice a day to find
+# nothing. Run it by hand if upstream ever moves.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Log planned PRs without pushing branches or creating PRs
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-cherry-pick
+  cancel-in-progress: false
+
+jobs:
+  upstream-cherry-pick:
+    name: Open upstream cherry-pick PRs
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Open PRs
+        run: .github/scripts/upstream-cherry-pick.sh
