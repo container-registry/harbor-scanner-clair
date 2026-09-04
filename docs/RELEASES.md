@@ -86,8 +86,8 @@ what ships but adds no adapter feature, which is why it is not `feat:`.
 adapter artifacts.
 
 Renovate is limited to `versions.env` (`enabledManagers: custom.regex`);
-dependabot keeps gomod and github-actions. The tooling pins get Renovate's
-default `chore(deps):`, which the adapter line hides. `TYPOS_VERSION` is
+dependabot keeps gomod and github-actions. The tooling pins are
+bumped as `ci(deps):`, which the adapter line hides. `TYPOS_VERSION` is
 deliberately unmanaged: its hand-computed `TYPOS_SHA256_LINUX_X86_64` companion
 has to be recomputed in the same commit, and a stale checksum failing the
 hygiene job is the reminder.
