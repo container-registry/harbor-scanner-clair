@@ -1,7 +1,21 @@
 .idea/
+.vscode/
 
-bin
-dist
-scanner-clair
-
+# Build artifacts
+bin/
+dist/
 coverage.txt
+
+# Task fingerprint cache
+.task/
+
+# Directory Cache Files
+.DS_Store
+thumbs.db
+
+# Python bytecode from the chart tooling
+__pycache__/
+*.pyc
+
+# govulncheck reports (task vuln-report)
+vulnerability-check/
