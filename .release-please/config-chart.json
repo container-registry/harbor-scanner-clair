@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "a80ecc00059d2a89dbff8ef5a940a2411893d0b1",
+  "pull-request-header": "Helm chart release. Merging tags `chart-vX.Y.Z` and publishes the chart.",
+  "pull-request-footer": "Squash-merge to release. See [docs/RELEASES.md](https://github.com/container-registry/harbor-scanner-clair/blob/main/docs/RELEASES.md).",
+  "pull-request-title-pattern": "chore: release chart ${version}",
+  "label": "chart-release: pending",
+  "release-label": "chart-release: tagged",
+  "include-v-in-tag": true,
+  "always-update": true,
+  "bump-minor-pre-major": true,
+  "tag-separator": "-",
+  "changelog-sections": [
+    {"type": "feat", "section": "Features"},
+    {"type": "fix", "section": "Bug Fixes"},
+    {"type": "perf", "section": "Performance Improvements"},
+    {"type": "upstream", "section": "Upstream"},
+    {"type": "revert", "section": "Reverts"},
+    {"type": "refactor", "section": "Code Refactoring"},
+    {"type": "docs", "section": "Documentation"},
+    {"type": "test", "section": "Tests", "hidden": true},
+    {"type": "chore", "section": "Miscellaneous"},
+    {"type": "ci", "section": "CI/CD", "hidden": true},
+    {"type": "build", "section": "Build System", "hidden": true}
+  ],
+  "packages": {
+    "deploy/chart": {
+      "release-type": "helm",
+      "package-name": "harbor-scanner-clair",
+      "component": "chart",
+      "include-component-in-tag": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [{"type": "generic", "path": "README.md"}]
+    }
+  }
+}
