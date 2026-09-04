@@ -3,18 +3,18 @@ package scanner
 import (
 	"crypto/sha256"
 	"fmt"
-	"github.com/docker/distribution"
-	"github.com/docker/distribution/manifest/schema2"
+	"strings"
+	"time"
+
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
+	"github.com/docker/distribution"
+	"github.com/docker/distribution/manifest/schema2"
 	log "github.com/sirupsen/logrus"
-	"strings"
-	"time"
 )
 
-type systemClock struct {
-}
+type systemClock struct{}
 
 func (c *systemClock) Now() time.Time {
 	return time.Now()
@@ -98,7 +98,6 @@ func (t *transformer) toComponentsOverview(layer *clair.Layer) harbor.Severity {
 		if k > overallSev {
 			overallSev = k
 		}
-
 	}
 	return overallSev
 }

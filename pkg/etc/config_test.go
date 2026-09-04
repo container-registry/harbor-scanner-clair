@@ -144,7 +144,6 @@ func TestGetConfig(t *testing.T) {
 			assert.Equal(t, tc.expectedConfig.RedisPool, cfg.RedisPool)
 		})
 	}
-
 }
 
 func TestAPIConfig_IsTLSEnabled(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -74,7 +74,7 @@ func (c *client) ScanLayer(layer Layer) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set(http.CanonicalHeaderKey("Content-Type"), "application/json")
+	req.Header.Set("Content-Type", "application/json")
 	_, err = c.send(req, http.StatusCreated)
 	if err != nil {
 		return err
@@ -145,7 +145,7 @@ func (c *client) send(req *http.Request, expectedStatus int) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}

@@ -3,14 +3,12 @@ package etc
 import (
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v6"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
-	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"github.com/xo/dburl"
 )
@@ -63,15 +61,15 @@ type RedisStore struct {
 	ScanJobTTL time.Duration `env:"SCANNER_STORE_REDIS_SCAN_JOB_TTL" envDefault:"1h"`
 }
 
-func GetLogLevel() logrus.Level {
+func GetLogLevel() log.Level {
 	if value, ok := os.LookupEnv("SCANNER_LOG_LEVEL"); ok {
-		level, err := logrus.ParseLevel(value)
+		level, err := log.ParseLevel(value)
 		if err != nil {
-			return logrus.InfoLevel
+			return log.InfoLevel
 		}
 		return level
 	}
-	return logrus.InfoLevel
+	return log.InfoLevel
 }
 
 func GetConfig() (cfg Config, err error) {
@@ -90,7 +88,7 @@ func GetConfig() (cfg Config, err error) {
 	}
 
 	for _, certFile := range cfg.TLS.ClientCAs {
-		certs, err := ioutil.ReadFile(strings.TrimSpace(certFile))
+		certs, err := os.ReadFile(strings.TrimSpace(certFile))
 		if err != nil {
 			return cfg, fmt.Errorf("failed to append %q to root CAs pool: %v", certFile, err)
 		}

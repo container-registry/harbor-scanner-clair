@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"fmt"
+
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/container-registry/harbor-scanner-clair/pkg/registry"

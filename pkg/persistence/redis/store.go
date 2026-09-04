@@ -31,7 +31,7 @@ func (s *store) Create(scanJob job.ScanJob) error {
 
 	bytes, err := json.Marshal(scanJob)
 	if err != nil {
-		return xerrors.Errorf("marshalling scan job: %w", err)
+		return xerrors.Errorf("marshaling scan job: %w", err)
 	}
 
 	key := s.getKeyForScanJob(scanJob.ID)
@@ -57,7 +57,7 @@ func (s *store) update(scanJob job.ScanJob) error {
 
 	bytes, err := json.Marshal(scanJob)
 	if err != nil {
-		return xerrors.Errorf("marshalling scan job: %w", err)
+		return xerrors.Errorf("marshaling scan job: %w", err)
 	}
 
 	key := s.getKeyForScanJob(scanJob.ID)

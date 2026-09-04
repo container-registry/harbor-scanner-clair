@@ -1,13 +1,14 @@
-// +build integration
+//go:build integration
 
 package redis
 
 import (
 	"context"
 	"fmt"
-	"github.com/container-registry/harbor-scanner-clair/pkg/redisx"
 	"testing"
 	"time"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/redisx"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
@@ -105,7 +106,6 @@ func TestStore(t *testing.T) {
 		require.NoError(t, err, "retrieve scan job should not fail")
 		require.Nil(t, j, "retrieved scan job should be nil, i.e. expired")
 	})
-
 }
 
 func getRedisURL(t *testing.T, ctx context.Context, redisC tc.Container) string {
@@ -114,7 +114,7 @@ func getRedisURL(t *testing.T, ctx context.Context, redisC tc.Container) string 
 	require.NoError(t, err)
 	port, err := redisC.MappedPort(ctx, "6379")
 	require.NoError(t, err)
-	return fmt.Sprintf("redis://%s:%d", host, port.Int())
+	return fmt.Sprintf("redis://%s:%d", host, port.Num())
 }
 
 func parseDuration(t *testing.T, s string) time.Duration {

@@ -1,15 +1,16 @@
 package scanner
 
 import (
-	"github.com/docker/distribution"
-	"github.com/docker/distribution/manifest"
-	"github.com/docker/distribution/manifest/schema2"
+	"testing"
+
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/container-registry/harbor-scanner-clair/pkg/mock"
+	"github.com/docker/distribution"
+	"github.com/docker/distribution/manifest"
+	"github.com/docker/distribution/manifest/schema2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestAdapter_Scan(t *testing.T) {
