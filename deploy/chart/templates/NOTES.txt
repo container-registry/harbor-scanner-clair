@@ -15,8 +15,7 @@ This chart does not deploy Clair. The adapter posts image layers to the Clair
 until that endpoint is reachable from this namespace.
 
 NOTE: /probe/ready returns 200 unconditionally. It verifies neither Redis nor
-Clair, so a Ready pod is not evidence that either is reachable - the
-/api/v1/metadata call above is.
+Clair, so a Ready pod is not evidence that either is reachable.
 {{- if and (not .Values.redis.existingSecret) (regexMatch "^rediss?(\\+sentinel)?://[^/@]*:[^/@]+@" .Values.redis.url) }}
 
 WARNING: redis.url embeds a password, which is now visible in the pod spec to

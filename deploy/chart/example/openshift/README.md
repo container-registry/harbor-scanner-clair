@@ -11,7 +11,7 @@ values survive underneath. They have to be set to `null` explicitly, which is
 what the values file here does. Check your work:
 
 ```sh
-helm template harbor-scanner-clair . -f values.yaml \
+helm template harbor-scanner-clair ../.. -f values.yaml \
   | grep -A6 'securityContext:'
 ```
 
