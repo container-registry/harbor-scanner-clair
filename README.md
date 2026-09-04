@@ -12,8 +12,49 @@ vulnerability scan feature.
 
 ## TOC
 
+* [This fork](#this-fork)
 * [Configuration](#configuration)
-* [Deploy to minikube](#deploy-to-minikube)
+* [Deploy to Kubernetes](#deploy-to-kubernetes)
+* [Contributing](#contributing)
+
+## This fork
+
+Maintained by [container-registry.com], forked from [goharbor/harbor-scanner-clair], which has
+had no commits since August 2020.
+
+What this fork changed:
+
+* Module path `github.com/container-registry/harbor-scanner-clair`, built with the Go version
+  declared in [`go.mod`](go.mod).
+* A Task-based build with tool and base-image pins in [`versions.env`](versions.env), in place
+  of the Makefile, Travis CI and a GoReleaser config current GoReleaser refuses to read.
+* Multi-arch images (`linux/amd64`, `linux/arm64`) published to
+  `8gears.container-registry.com/8gcr/harbor-scanner-clair`, signed keylessly with cosign and
+  carrying an SBOM attestation. Upstream published amd64-only images to Docker Hub and stopped
+  at `1.1.1` in August 2020.
+* An Alpine-based image that runs as a non-root user and has a health probe, in place of the
+  four-line `FROM scratch` image that ran as root.
+* Releases automated with release-please.
+
+What this fork did not change. The adapter code is untouched, so these are properties of the
+adapter itself and not gaps in the port:
+
+* It speaks the **Clair v1 API** against CoreOS Clair 2.x, which is end of life. Clair 4.x is
+  not supported.
+* **Harbor has not bundled Clair since 2.2** (`goharbor/harbor` commit `590212b48`, November
+  2020). Current Harbor neither deploys nor configures Clair, so you operate the Clair server
+  yourself and register this adapter with Harbor by URL.
+* It implements **Harbor scanner adapter API v1.0** only: vulnerability reports, no SBOM, no
+  capability negotiation. Harbor derives its registry-wide Security Hub numbers from the
+  capabilities of the system-default scanner, so this adapter should not be made the default.
+* Scan jobs run on an in-process goroutine pool with no concurrency limit and no retries.
+  Redis holds results, not a queue, so a restart loses every in-flight scan and leaves its
+  record `Running` until the TTL expires.
+* The scanner metadata Harbor displays is hardcoded to Clair / CoreOS / 2.x. It is not read
+  from the backend.
+
+Known defects that were deliberately left in place are listed under "Known rough edges" in
+[`CLAUDE.md`](CLAUDE.md).
 
 ## Configuration
 
@@ -42,17 +83,15 @@ Configuration of the adapter is done via environment variables at startup.
 | `SCANNER_STORE_REDIS_NAMESPACE`       | `harbor.scanner.clair:store` | A namespace for keys in a redis store. |
 | `SCANNER_STORE_REDIS_SCAN_JOB_TTL`    | `1h`                         | The time to live for persisting scan jobs and associated scan reports. |
 
-## Deploy to minikube
+## Deploy to Kubernetes
 
-1. Configure Docker client with Docker Engine in minikube:
-   ```
-   eval $(minikube docker-env -p harbor)
-   ```
-2. Build Docker container:
-   ```
-   task image:local
-   ```
-3. Configure adapter to handle TLS traffic:
+[`kube/harbor-scanner-clair.yaml`](kube/harbor-scanner-clair.yaml) runs the published image
+`8gears.container-registry.com/8gcr/harbor-scanner-clair:latest` as a single-replica
+`Deployment` behind a `LoadBalancer` `Service` on port 8443, serving HTTPS. Its inlined env
+block points `SCANNER_CLAIR_URL` and `SCANNER_STORE_REDIS_URL` at in-cluster defaults; edit
+them for your Clair and Redis before applying. There is no Helm chart yet.
+
+1. Configure the adapter to handle TLS traffic:
    1. Generate certificate and private key files:
       ```
       $ openssl genrsa -out tls.key 2048
@@ -68,15 +107,31 @@ Configuration of the adapter is done via environment variables at startup.
         --cert=tls.crt \
         --key=tls.key
       ```
-4. Create `harbor-scanner-clair` deployment and service:
+2. Create the `harbor-scanner-clair` deployment and service:
    ```
    kubectl apply -f kube/harbor-scanner-clair.yaml
    ```
-5. If everything is fine you should be able to get scanner's metadata:
+3. If everything is fine you should be able to get the scanner's metadata:
    ```
    kubectl port-forward service/harbor-scanner-clair 8443:8443 &> /dev/null &
    curl -vk https://localhost:8443/api/v1/metadata | jq
    ```
+4. Register the adapter in Harbor under Administration > Interrogation Services > Scanners,
+   using the URL at which Harbor can reach the service. Harbor's **Test Connection** button
+   calls the same `/api/v1/metadata` endpoint.
+
+To try a locally built image instead of the published one, build it into the cluster's Docker
+daemon and change the `image:` field in the manifest:
+
+```
+eval $(minikube docker-env -p harbor)
+task image:local
+```
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup, the build and test commands,
+and the commit conventions releases depend on.
 
 [release-img]: https://img.shields.io/github/release/container-registry/harbor-scanner-clair.svg
 [release]: https://github.com/container-registry/harbor-scanner-clair/releases
@@ -84,6 +139,9 @@ Configuration of the adapter is done via environment variables at startup.
 [report-card]: https://goreportcard.com/report/github.com/container-registry/harbor-scanner-clair
 [license-img]: https://img.shields.io/github/license/container-registry/harbor-scanner-clair.svg
 [license]: https://github.com/container-registry/harbor-scanner-clair/blob/main/LICENSE
+
+[container-registry.com]: https://container-registry.com
+[goharbor/harbor-scanner-clair]: https://github.com/goharbor/harbor-scanner-clair
 
 [clair-url]: https://github.com/coreos/clair
 [image-vulnerability-scanning-proposal]: https://github.com/goharbor/community/blob/master/proposals/pluggable-image-vulnerability-scanning_proposal.md
