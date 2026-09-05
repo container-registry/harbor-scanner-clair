@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -319,9 +320,12 @@ func (h *requestHandler) GetMetadata(res http.ResponseWriter, req *http.Request)
 		"org.label-schema.vcs":        vcsURL,
 
 		// Surfaced in Harbor's scanner detail view so an operator can see which
-		// Clair this adapter is wired to without reading the deployment. The URL
-		// is not a secret; the PSK is, and is never reported.
-		"env.SCANNER_CLAIR_URL": h.config.Clair.URL,
+		// Clair this adapter is wired to, and how long a scan may take, without
+		// reading the deployment. The URL is not a secret; the PSK is, and only
+		// whether one is configured is ever reported.
+		"env.SCANNER_CLAIR_URL":           h.config.Clair.URL,
+		"env.SCANNER_CLAIR_INDEX_TIMEOUT": h.config.Clair.IndexTimeout.String(),
+		"env.SCANNER_CLAIR_PSK_ENABLED":   strconv.FormatBool(h.config.Clair.IsPSKEnabled()),
 	}
 
 	if h.vulnDBUpdatedAt != nil {

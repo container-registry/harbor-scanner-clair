@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 )
 
 type Envs map[string]string
@@ -81,11 +83,16 @@ func TestGetConfig(t *testing.T) {
 					MetricsEnabled: true,
 				},
 				Clair: ClairConfig{
-					URL: "http://harbor-harbor-clair:6060",
+					URL:                "http://clair:6060",
+					JWTIssuer:          "harbor-scanner-clair",
+					IndexTimeout:       parseDuration(t, "10m"),
+					RequestTimeout:     parseDuration(t, "30s"),
+					ReportRetryTimeout: parseDuration(t, "5m"),
 				},
 				Store: Store{
-					Backend:    StoreBackendPostgres,
-					ScanJobTTL: parseDuration(t, "1h"),
+					Backend: StoreBackendPostgres,
+					// Derived: 2*LockTTL+3s with the default Clair budgets.
+					ScanJobTTL: parseDuration(t, "32m3s"),
 				},
 				Postgres: Postgres{
 					URL:      testDSN,
@@ -112,12 +119,17 @@ func TestGetConfig(t *testing.T) {
 				"SCANNER_TLS_INSECURE_SKIP_VERIFY": "true",
 				"SCANNER_TLS_CLIENTCAS":            "test/data/ca.crt",
 
-				"SCANNER_CLAIR_URL": "https://demo.clair:7080",
+				"SCANNER_CLAIR_URL":                  "https://demo.clair:7080",
+				"SCANNER_CLAIR_PSK":                  "c2VjcmV0LXBzaw==",
+				"SCANNER_CLAIR_JWT_ISSUER":           "custom-issuer",
+				"SCANNER_CLAIR_INDEX_TIMEOUT":        "20m",
+				"SCANNER_CLAIR_REQUEST_TIMEOUT":      "45s",
+				"SCANNER_CLAIR_REPORT_RETRY_TIMEOUT": "7m",
 
 				"SCANNER_STORE_BACKEND":            "POSTGRES",
 				"SCANNER_STORE_POSTGRES_URL":       testDSN,
 				"SCANNER_STORE_POSTGRES_MAX_CONNS": "12",
-				"SCANNER_STORE_SCAN_JOB_TTL":       "3h",
+				"SCANNER_STORE_SCAN_JOB_TTL":       "90m",
 
 				"SCANNER_JOB_QUEUE_WORKER_CONCURRENCY": "4",
 			},
@@ -134,13 +146,18 @@ func TestGetConfig(t *testing.T) {
 					APIKey:         "s3cret",
 				},
 				Clair: ClairConfig{
-					URL: "https://demo.clair:7080",
+					URL:                "https://demo.clair:7080",
+					PSK:                "c2VjcmV0LXBzaw==",
+					JWTIssuer:          "custom-issuer",
+					IndexTimeout:       parseDuration(t, "20m"),
+					RequestTimeout:     parseDuration(t, "45s"),
+					ReportRetryTimeout: parseDuration(t, "7m"),
 				},
 				Store: Store{
 					// Normalized before validation, so "POSTGRES" cannot take the
-					// memory code path, or skip the connectivity check.
+					// memory code path, or skip its connectivity check.
 					Backend:    StoreBackendPostgres,
-					ScanJobTTL: parseDuration(t, "3h"),
+					ScanJobTTL: parseDuration(t, "90m"),
 				},
 				Postgres: Postgres{
 					URL:      testDSN,
@@ -245,6 +262,7 @@ func TestWorkerConcurrencyIsValidatedForBothBackends(t *testing.T) {
 		t.Run(backend, func(t *testing.T) {
 			setenvs(t, Envs{
 				"SCANNER_STORE_BACKEND":                backend,
+				"SCANNER_STORE_POSTGRES_URL":           testDSN,
 				"SCANNER_JOB_QUEUE_WORKER_CONCURRENCY": "0",
 			})
 			_, err := GetConfig()
@@ -320,10 +338,129 @@ func TestJobBudget(t *testing.T) {
 
 	assert.Equal(t, 15*time.Minute+30*time.Second, cfg.JobDeadline())
 	assert.Equal(t, 16*time.Minute, cfg.LockTTL())
+	assert.Equal(t, 32*time.Minute+3*time.Second, cfg.Store.ScanJobTTL)
 	assert.Less(t, cfg.JobDeadline(), cfg.LockTTL(),
 		"the job deadline must fire first, so a worker never outlives its row lock")
 	assert.Greater(t, cfg.Store.ScanJobTTL, cfg.LockTTL(),
 		"a job whose record expires while it runs can never report a result")
+}
+
+// The budget moves with the Clair timeouts it is made of, so raising the index
+// timeout must raise the lock and the derived TTL with it.
+func TestJobBudgetFollowsTheClairTimeouts(t *testing.T) {
+	setenvs(t, Envs{
+		"SCANNER_STORE_POSTGRES_URL":         testDSN,
+		"SCANNER_CLAIR_INDEX_TIMEOUT":        "20m",
+		"SCANNER_CLAIR_REPORT_RETRY_TIMEOUT": "10m",
+	})
+	cfg, err := GetConfig()
+	require.NoError(t, err)
+
+	assert.Equal(t, 30*time.Minute+30*time.Second, cfg.JobDeadline())
+	assert.Equal(t, 31*time.Minute, cfg.LockTTL())
+	assert.Equal(t, 62*time.Minute+3*time.Second, cfg.Store.ScanJobTTL)
+}
+
+// An explicit TTL is kept as given: the derivation only fills in an unset one,
+// and an operator who sizes the value for their queue must not be overruled.
+func TestExplicitScanJobTTLWins(t *testing.T) {
+	setenvs(t, Envs{"SCANNER_STORE_POSTGRES_URL": testDSN, "SCANNER_STORE_SCAN_JOB_TTL": "4h"})
+	cfg, err := GetConfig()
+	require.NoError(t, err)
+	assert.Equal(t, 4*time.Hour, cfg.Store.ScanJobTTL)
+}
+
+func TestClairURLIsValidated(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"empty", "  "},
+		{"no scheme", "clair:6060"},
+		{"not http", "unix:///var/run/clair.sock"},
+		{"no host", "http://"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setenvs(t, Envs{"SCANNER_CLAIR_URL": tc.value})
+			_, err := GetConfig()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "SCANNER_CLAIR_URL")
+		})
+	}
+}
+
+// A PSK that is not base64 reaches Clair as a wrong key and comes back as a 401
+// on every scan, which reads like a permissions problem rather than a typo.
+func TestInvalidPSKIsRejected(t *testing.T) {
+	setenvs(t, Envs{"SCANNER_CLAIR_PSK": "not base64!"})
+	_, err := GetConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SCANNER_CLAIR_PSK")
+}
+
+func TestNonPositiveClairTimeoutsAreRejected(t *testing.T) {
+	for _, name := range []string{
+		"SCANNER_CLAIR_INDEX_TIMEOUT",
+		"SCANNER_CLAIR_REQUEST_TIMEOUT",
+		"SCANNER_CLAIR_REPORT_RETRY_TIMEOUT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			setenvs(t, Envs{name: "0s"})
+			_, err := GetConfig()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), name)
+		})
+	}
+}
+
+// The Clair client is configured from exactly these environment names, so the
+// mapping is pinned rather than left to a future rename.
+func TestClairClientConfig(t *testing.T) {
+	setenvs(t, Envs{
+		"SCANNER_STORE_POSTGRES_URL":         testDSN,
+		"SCANNER_CLAIR_URL":                  "https://clair.example.com",
+		"SCANNER_CLAIR_PSK":                  "c2VjcmV0LXBzaw==",
+		"SCANNER_CLAIR_JWT_ISSUER":           "custom-issuer",
+		"SCANNER_CLAIR_INDEX_TIMEOUT":        "11m",
+		"SCANNER_CLAIR_REQUEST_TIMEOUT":      "12s",
+		"SCANNER_CLAIR_REPORT_RETRY_TIMEOUT": "13m",
+	})
+	cfg, err := GetConfig()
+	require.NoError(t, err)
+
+	assert.Equal(t, clair.Config{
+		URL:                "https://clair.example.com",
+		PSK:                "c2VjcmV0LXBzaw==",
+		Issuer:             "custom-issuer",
+		IndexTimeout:       11 * time.Minute,
+		RequestTimeout:     12 * time.Second,
+		ReportRetryTimeout: 13 * time.Minute,
+	}, cfg.ClairClientConfig())
+	assert.True(t, cfg.Clair.IsPSKEnabled())
+}
+
+// SCANNER_TLS_CLIENTCAS is the outbound trust bundle despite its name, and the
+// pool it produces is what both Clair and the registry are dialed with.
+func TestOutboundTLSConfig(t *testing.T) {
+	setenvs(t, Envs{
+		"SCANNER_STORE_POSTGRES_URL":       testDSN,
+		"SCANNER_TLS_CLIENTCAS":            "test/data/ca.crt",
+		"SCANNER_TLS_INSECURE_SKIP_VERIFY": "true",
+	})
+	cfg, err := GetConfig()
+	require.NoError(t, err)
+
+	outbound := cfg.TLS.Outbound()
+	require.NotNil(t, outbound)
+	assert.True(t, outbound.InsecureSkipVerify)
+	assert.Equal(t, cfg.TLS.RootCAs, outbound.RootCAs)
+	assert.NotNil(t, outbound.RootCAs)
+}
+
+// An unreadable or unparseable outbound CA bundle fails the deployment rather
+// than silently leaving the pool without it.
+func TestUnusableOutboundCABundleIsRejected(t *testing.T) {
+	setenvs(t, Envs{"SCANNER_TLS_CLIENTCAS": "test/data/does-not-exist.crt"})
+	_, err := GetConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does-not-exist.crt")
 }
 
 func TestAPIConfig_IsTLSEnabled(t *testing.T) {
@@ -362,7 +499,14 @@ func TestAPIConfig_IsTLSEnabled(t *testing.T) {
 
 func setenvs(t *testing.T, envs Envs) {
 	t.Helper()
+	// os.Clearenv wipes TMPDIR along with everything else, and t.TempDir then
+	// falls back to /tmp, which is not writable for every user the suite runs
+	// as.
+	tmpDir := os.Getenv("TMPDIR")
 	os.Clearenv()
+	if tmpDir != "" {
+		require.NoError(t, os.Setenv("TMPDIR", tmpDir))
+	}
 	for key, value := range envs {
 		err := os.Setenv(key, value)
 		require.NoError(t, err)
