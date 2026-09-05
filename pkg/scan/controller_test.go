@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"testing"
 
-	"github.com/docker/distribution"
-	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -16,264 +17,297 @@ import (
 	"github.com/container-registry/harbor-scanner-clair/pkg/job"
 	"github.com/container-registry/harbor-scanner-clair/pkg/persistence"
 	"github.com/container-registry/harbor-scanner-clair/pkg/persistence/memory"
+	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
 )
 
 const (
 	testJobID      = "job-1"
-	configDigest   = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	layerDigestA   = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	layerDigestB   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	artifactDigest = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
 	testAuthValue  = "Bearer harbor-minted-token"
 )
 
-// fakeManifest is the smallest thing that satisfies distribution.Manifest; the
-// controller only ever calls References().
-type fakeManifest struct {
-	refs []distribution.Descriptor
-}
-
-func (m fakeManifest) References() []distribution.Descriptor { return m.refs }
-func (m fakeManifest) Payload() (string, []byte, error)      { return "", nil, nil }
-
 type fakeRegistry struct {
-	manifest distribution.Manifest
+	manifest *registry.Manifest
 	err      error
-	panics   bool
+
+	request harbor.ScanRequest
+	calls   int
 }
 
-func (r *fakeRegistry) GetManifest(harbor.ScanRequest) (distribution.Manifest, error) {
-	if r.panics {
-		panic("registry client exploded")
+func (r *fakeRegistry) GetManifest(_ context.Context, req harbor.ScanRequest) (*registry.Manifest, error) {
+	r.calls++
+	r.request = req
+	if r.err != nil {
+		return nil, r.err
 	}
-	return r.manifest, r.err
+	return r.manifest, nil
 }
 
 type fakeClair struct {
-	indexed   []clair.Manifest
-	reportFor []string
-	report    *clair.VulnerabilityReport
-	indexErr  error
-	reportErr error
-	// onReport runs after the report call, which is where a per-job deadline
-	// realistically fires.
+	indexReport *clair.IndexReport
+	indexErr    error
+	report      *clair.VulnerabilityReport
+	reportErr   error
+	// onReport runs at the top of the report call, which is where a per-job
+	// deadline realistically fires.
 	onReport func()
+
+	indexed       clair.Manifest
+	reportedHash  string
+	indexCalls    int
+	reportedCalls int
 }
 
 func (c *fakeClair) Index(_ context.Context, m clair.Manifest) (*clair.IndexReport, error) {
-	c.indexed = append(c.indexed, m)
+	c.indexCalls++
+	c.indexed = m
 	if c.indexErr != nil {
 		return nil, c.indexErr
 	}
-	return &clair.IndexReport{ManifestHash: m.Hash, State: clair.StateIndexFinished, Success: true}, nil
+	return c.indexReport, nil
 }
 
 func (c *fakeClair) VulnerabilityReport(_ context.Context, manifestHash string) (*clair.VulnerabilityReport, error) {
-	c.reportFor = append(c.reportFor, manifestHash)
 	if c.onReport != nil {
 		c.onReport()
 	}
+	c.reportedCalls++
+	c.reportedHash = manifestHash
 	if c.reportErr != nil {
 		return nil, c.reportErr
 	}
-	if c.report != nil {
-		return c.report, nil
+	return c.report, nil
+}
+
+func testManifest() *registry.Manifest {
+	return &registry.Manifest{
+		SchemaVersion: 2,
+		MediaType:     "application/vnd.oci.image.manifest.v1+json",
+		Layers: []ocispec.Descriptor{
+			{MediaType: "application/vnd.oci.image.layer.v1.tar+gzip", Digest: layerDigestA},
+			{MediaType: "application/vnd.oci.image.layer.v1.tar+gzip", Digest: layerDigestB},
+		},
 	}
-	return &clair.VulnerabilityReport{ManifestHash: manifestHash}, nil
 }
 
-func manifestWithTwoLayers() distribution.Manifest {
-	return fakeManifest{refs: []distribution.Descriptor{
-		{MediaType: mediaTypeDockerImageConfig, Digest: digest.Digest(configDigest)},
-		{MediaType: "application/vnd.docker.image.rootfs.diff.tar.gzip", Digest: digest.Digest(layerDigestA)},
-		{MediaType: "application/vnd.docker.image.rootfs.diff.tar.gzip", Digest: digest.Digest(layerDigestB)},
-	}}
-}
-
-func scanRequest() harbor.ScanRequest {
+func testScanRequest() harbor.ScanRequest {
 	return harbor.ScanRequest{
-		Registry: harbor.Registry{URL: "https://core.harbor.domain", Authorization: testAuthValue},
+		Registry: harbor.Registry{URL: "https://harbor.example.com", Authorization: testAuthValue},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: artifactDigest},
 	}
 }
 
-func testScanner() harbor.Scanner {
-	return harbor.ClairScanner()
+func finishedIndexReport() *clair.IndexReport {
+	return &clair.IndexReport{ManifestHash: artifactDigest, State: clair.StateIndexFinished, Success: true}
 }
 
-func queuedStore(t *testing.T) persistence.Store {
+// newController wires the controller to a memory store with the job record the
+// queue would have created.
+func newController(t *testing.T, reg *fakeRegistry, cl *fakeClair) (Controller, persistence.Store) {
 	t.Helper()
 	store := memory.NewStore()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{ID: testJobID, Status: job.Queued}))
-	return store
+	return NewController(store, cl, reg, harbor.ClairScanner()), store
 }
 
-func reportWithOneFinding() *clair.VulnerabilityReport {
-	return &clair.VulnerabilityReport{
-		ManifestHash: artifactDigest,
-		Packages: map[string]*clair.Package{
-			"1": {ID: "1", Name: "openssl", Version: "1.1.1"},
+func TestController_Scan(t *testing.T) {
+	reg := &fakeRegistry{manifest: testManifest()}
+	cl := &fakeClair{
+		indexReport: finishedIndexReport(),
+		report: &clair.VulnerabilityReport{
+			ManifestHash:           artifactDigest,
+			Packages:               map[string]*clair.Package{"1": {ID: "1", Name: "musl", Version: "1.1.22-r3"}},
+			Vulnerabilities:        map[string]*clair.Vulnerability{"9": {ID: "9", Name: "CVE-2019-14697", NormalizedSeverity: "High", FixedInVersion: "1.1.22-r4"}},
+			PackageVulnerabilities: map[string][]string{"1": {"9"}},
 		},
-		Vulnerabilities: map[string]*clair.Vulnerability{
-			"10": {
-				ID:                 "10",
-				Name:               "CVE-2019-1111",
-				NormalizedSeverity: "High",
-				Description:        "an example",
-				FixedInVersion:     "1.1.2",
-				Links:              "https://example.test/CVE-2019-1111",
-			},
-		},
-		PackageVulnerabilities: map[string][]string{"1": {"10"}},
 	}
-}
+	controller, store := newController(t, reg, cl)
 
-func TestControllerScanHappyPath(t *testing.T) {
-	store := queuedStore(t)
-	clairClient := &fakeClair{report: reportWithOneFinding()}
-	registryClient := &fakeRegistry{manifest: manifestWithTwoLayers()}
+	require.NoError(t, controller.Scan(context.Background(), testJobID, testScanRequest()))
 
-	c := NewController(store, clairClient, registryClient, testScanner())
-	require.NoError(t, c.Scan(context.Background(), testJobID, scanRequest()))
-
-	got, err := store.Get(context.Background(), testJobID)
-	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, job.Finished, got.Status)
-	assert.Empty(t, got.Error)
-
-	var report harbor.ScanReport
-	require.NoError(t, json.Unmarshal(got.Report, &report))
-	assert.Equal(t, testScanner(), report.Scanner)
-	assert.Equal(t, harbor.SevHigh, report.Severity)
-	require.Len(t, report.Vulnerabilities, 1)
-	assert.Equal(t, "CVE-2019-1111", report.Vulnerabilities[0].ID)
-
-	// One manifest describes the whole artifact: the artifact digest is the
-	// hash Clair indexes and reports under, and the image config is not a layer.
-	require.Len(t, clairClient.indexed, 1)
+	// The Clair manifest is built from the fetched manifest, in layer order,
+	// with the scan authorization forwarded verbatim.
 	assert.Equal(t, clair.Manifest{
 		Hash: artifactDigest,
 		Layers: []clair.Layer{
 			{
 				Hash:    layerDigestA,
-				URI:     "https://core.harbor.domain/v2/library/alpine/blobs/" + layerDigestA,
+				URI:     "https://harbor.example.com/v2/library/alpine/blobs/" + layerDigestA,
 				Headers: map[string][]string{"Authorization": {testAuthValue}},
 			},
 			{
 				Hash:    layerDigestB,
-				URI:     "https://core.harbor.domain/v2/library/alpine/blobs/" + layerDigestB,
+				URI:     "https://harbor.example.com/v2/library/alpine/blobs/" + layerDigestB,
 				Headers: map[string][]string{"Authorization": {testAuthValue}},
 			},
 		},
-	}, clairClient.indexed[0])
-	assert.Equal(t, []string{artifactDigest}, clairClient.reportFor)
-}
+	}, cl.indexed)
+	// The request's digest, not whatever Clair echoed back on the index report.
+	assert.Equal(t, artifactDigest, cl.reportedHash)
 
-// TestToClairManifestSkipsTheImageConfig pins that both spellings of the image
-// config are skipped. Sending it makes Clair fetch a JSON blob and fail to read
-// it as a filesystem.
-func TestToClairManifestSkipsTheImageConfig(t *testing.T) {
-	manifest := fakeManifest{refs: []distribution.Descriptor{
-		{MediaType: mediaTypeOCIImageConfig, Digest: digest.Digest(configDigest)},
-		{MediaType: "application/vnd.oci.image.layer.v1.tar+gzip", Digest: digest.Digest(layerDigestA)},
-	}}
-
-	built, err := toClairManifest(scanRequest(), manifest)
+	scanJob, err := store.Get(context.Background(), testJobID)
 	require.NoError(t, err)
-	require.Len(t, built.Layers, 1)
-	assert.Equal(t, layerDigestA, built.Layers[0].Hash)
+	require.NotNil(t, scanJob)
+	assert.Equal(t, job.Finished, scanJob.Status)
+
+	var report harbor.ScanReport
+	require.NoError(t, json.Unmarshal(scanJob.Report, &report))
+	assert.Equal(t, harbor.ClairScanner(), report.Scanner)
+	assert.Equal(t, artifactDigest, report.Artifact.Digest)
+	require.Len(t, report.Vulnerabilities, 1)
+	assert.Equal(t, "CVE-2019-14697", report.Vulnerabilities[0].ID)
 }
 
-func TestToClairManifestTrimsTheRegistryURL(t *testing.T) {
-	req := scanRequest()
-	req.Registry.URL = "https://core.harbor.domain/"
+// The stored error string is what Harbor renders as the scan job's failure
+// detail, so every failure mode has to arrive with the category prefix an
+// operator acts on.
+func TestController_ScanFailureCategories(t *testing.T) {
+	transportError := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
 
-	built, err := toClairManifest(req, manifestWithTwoLayers())
-	require.NoError(t, err)
-	assert.Equal(t, "https://core.harbor.domain/v2/library/alpine/blobs/"+layerDigestA, built.Layers[0].URI)
-}
-
-// TestControllerScanRecordsFailures pins that every failure reaches the store as
-// a Failed record with the cause. Harbor surfaces that text, so a scan that
-// fails silently is a scan an operator cannot debug.
-func TestControllerScanRecordsFailures(t *testing.T) {
 	testCases := []struct {
 		name           string
 		registry       *fakeRegistry
 		clair          *fakeClair
-		expectedErrMsg string
+		expectedPrefix string
 	}{
 		{
-			name:           "manifest fetch fails",
-			registry:       &fakeRegistry{err: errors.New("registry is down")},
+			name:           "registry auth",
+			registry:       &fakeRegistry{err: fmt.Errorf("getting manifest: %w", registry.ErrRegistryAuth)},
 			clair:          &fakeClair{},
-			expectedErrMsg: "getting manifest: registry is down",
+			expectedPrefix: "[auth] fetching the artifact manifest",
 		},
 		{
-			name:           "manifest references no layer",
-			registry:       &fakeRegistry{manifest: fakeManifest{}},
+			name:           "missing manifest",
+			registry:       &fakeRegistry{err: fmt.Errorf("%w: 404", registry.ErrManifestNotFound)},
 			clair:          &fakeClair{},
-			expectedErrMsg: "no scannable layers",
+			expectedPrefix: "[manifest] fetching the artifact manifest",
 		},
 		{
-			name:           "clair cannot index the artifact",
-			registry:       &fakeRegistry{manifest: manifestWithTwoLayers()},
-			clair:          &fakeClair{indexErr: clair.ErrIndexFailed},
-			expectedErrMsg: "indexing artifact: clair failed to index the artifact",
-		},
-		{
-			name:           "clair cannot return the report",
-			registry:       &fakeRegistry{manifest: manifestWithTwoLayers()},
-			clair:          &fakeClair{reportErr: clair.ErrNotIndexed},
-			expectedErrMsg: "getting vulnerability report: clair has no index report",
-		},
-		{
-			// The recover() keeps one malformed artifact from taking the whole
-			// worker goroutine, and therefore all scanning, down with it.
-			name:           "a panic is recorded, not propagated",
-			registry:       &fakeRegistry{panics: true},
+			name:           "unscannable layer",
+			registry:       &fakeRegistry{err: fmt.Errorf("%w: cosign", registry.ErrUnscannableLayer)},
 			clair:          &fakeClair{},
-			expectedErrMsg: "panic during scan",
+			expectedPrefix: "[unscannable_layer] fetching the artifact manifest",
+		},
+		{
+			name:           "unsupported artifact",
+			registry:       &fakeRegistry{err: fmt.Errorf("%w: an image index", registry.ErrUnsupportedArtifact)},
+			clair:          &fakeClair{},
+			expectedPrefix: "[unscannable_layer] fetching the artifact manifest",
+		},
+		{
+			name:           "registry transport failure",
+			registry:       &fakeRegistry{err: fmt.Errorf("getting manifest: %w", transportError)},
+			clair:          &fakeClair{},
+			expectedPrefix: "[network] fetching the artifact manifest",
+		},
+		{
+			name:           "clair rejects the credentials",
+			registry:       &fakeRegistry{manifest: testManifest()},
+			clair:          &fakeClair{indexErr: fmt.Errorf("%w: 401", clair.ErrUnauthorized)},
+			expectedPrefix: "[auth] indexing the artifact",
+		},
+		{
+			name:           "clair fails the index",
+			registry:       &fakeRegistry{manifest: testManifest()},
+			clair:          &fakeClair{indexErr: fmt.Errorf("%w: tarfs", clair.ErrIndexFailed)},
+			expectedPrefix: "[clair_index] indexing the artifact",
+		},
+		{
+			name:     "clair reports an unfinished index",
+			registry: &fakeRegistry{manifest: testManifest()},
+			clair: &fakeClair{
+				indexReport: &clair.IndexReport{State: clair.StateIndexError, Err: "fetching layer failed"},
+			},
+			expectedPrefix: "[clair_index] indexing the artifact",
+		},
+		{
+			name:           "clair is unavailable",
+			registry:       &fakeRegistry{manifest: testManifest()},
+			clair:          &fakeClair{indexReport: finishedIndexReport(), reportErr: fmt.Errorf("%w: 503", clair.ErrServerError)},
+			expectedPrefix: "[clair_unavailable] getting the vulnerability report",
+		},
+		{
+			name:           "the matcher never initialized",
+			registry:       &fakeRegistry{manifest: testManifest()},
+			clair:          &fakeClair{indexReport: finishedIndexReport(), reportErr: fmt.Errorf("%w", clair.ErrMatcherNotReady)},
+			expectedPrefix: "[clair_unavailable] getting the vulnerability report",
+		},
+		{
+			name:           "the report was truncated",
+			registry:       &fakeRegistry{manifest: testManifest()},
+			clair:          &fakeClair{indexReport: finishedIndexReport(), reportErr: fmt.Errorf("%w", clair.ErrReportTruncated)},
+			expectedPrefix: "[report_parse] getting the vulnerability report",
+		},
+		{
+			name:           "the job ran out of time",
+			registry:       &fakeRegistry{manifest: testManifest()},
+			clair:          &fakeClair{indexErr: fmt.Errorf("indexing: %w", context.DeadlineExceeded)},
+			expectedPrefix: "[timeout] indexing the artifact",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := queuedStore(t)
-			c := NewController(store, tc.clair, tc.registry, testScanner())
+			controller, store := newController(t, tc.registry, tc.clair)
 
-			require.NoError(t, c.Scan(context.Background(), testJobID, scanRequest()),
-				"a failed scan is a recorded outcome, not an error returned to the worker")
+			// A failed scan is a recorded outcome, not an error the worker
+			// retries, so Scan itself returns nil.
+			require.NoError(t, controller.Scan(context.Background(), testJobID, testScanRequest()))
 
-			got, err := store.Get(context.Background(), testJobID)
+			scanJob, err := store.Get(context.Background(), testJobID)
 			require.NoError(t, err)
-			require.NotNil(t, got)
-			assert.Equal(t, job.Failed, got.Status)
-			assert.Contains(t, got.Error, tc.expectedErrMsg)
+			require.NotNil(t, scanJob)
+			assert.Equal(t, job.Failed, scanJob.Status)
+			assert.Truef(t, len(scanJob.Error) > 0 && scanJob.Error[0] == '[',
+				"the stored error must carry a category prefix, got %q", scanJob.Error)
+			assert.Contains(t, scanJob.Error, tc.expectedPrefix)
 		})
 	}
 }
 
-// TestControllerScanIgnoresAVanishedRecord pins that a job whose store record
-// expired while it was queued is not reported as a scan failure: there is
-// nothing left to write a status to, and Harbor already learns it is gone from
-// the 404 on its next poll.
-func TestControllerScanIgnoresAVanishedRecord(t *testing.T) {
-	store := memory.NewStore() // no record created
-	c := NewController(store, &fakeClair{}, &fakeRegistry{manifest: manifestWithTwoLayers()}, testScanner())
+// An artifact digest Clair's schema cannot accept never reaches the registry.
+func TestController_ScanRejectsAnUnusableDigest(t *testing.T) {
+	for _, tc := range []struct{ name, digest string }{
+		{"not a digest", "latest"},
+		{"not sha256", "sha512:0f5f1b1d2b8ae4d4b1ee1ee62a52ffb3f7f5a0d5a5a2e5f7bcbb0a0dd3f6d4b10f5f1b1d2b8ae4d4b1ee1ee62a52ffb3f7f5a0d5a5a2e5f7bcbb0a0dd3f6d4b1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &fakeRegistry{manifest: testManifest()}
+			controller, store := newController(t, reg, &fakeClair{})
 
-	require.NoError(t, c.Scan(context.Background(), testJobID, scanRequest()))
+			req := testScanRequest()
+			req.Artifact.Digest = tc.digest
+			require.NoError(t, controller.Scan(context.Background(), testJobID, req))
 
-	got, err := store.Get(context.Background(), testJobID)
-	require.NoError(t, err)
-	assert.Nil(t, got, "nothing must be resurrected for a job whose record is gone")
+			assert.Zero(t, reg.calls)
+			scanJob, err := store.Get(context.Background(), testJobID)
+			require.NoError(t, err)
+			require.NotNil(t, scanJob)
+			assert.Equal(t, job.Failed, scanJob.Status)
+			assert.Contains(t, scanJob.Error, "[manifest] validating the artifact digest")
+		})
+	}
 }
 
-// ctxStore rejects writes on an expired context, the way the database driver
-// does. The
-// memory store ignores ctx, so it cannot exercise the detached terminal write
-// on its own.
+// A record that expired while the job was queued is a capacity symptom. There is
+// nothing left to write a Failed status to, and Harbor learns the scan is gone
+// from the 404 it is already polling.
+func TestController_ScanWritesNothingWhenTheRecordIsGone(t *testing.T) {
+	store := memory.NewStore()
+	controller := NewController(store, &fakeClair{}, &fakeRegistry{manifest: testManifest()}, harbor.ClairScanner())
+
+	require.NoError(t, controller.Scan(context.Background(), testJobID, testScanRequest()))
+
+	scanJob, err := store.Get(context.Background(), testJobID)
+	require.NoError(t, err)
+	assert.Nil(t, scanJob)
+}
+
+// ctxStore rejects writes on an expired context, the way pgx does. The memory
+// store ignores ctx, so it cannot exercise the detached terminal write on its
+// own.
 type ctxStore struct {
 	persistence.Store
 }
@@ -292,22 +326,74 @@ func (s ctxStore) UpdateStatus(ctx context.Context, scanJobID string, status job
 	return s.Store.UpdateStatus(ctx, scanJobID, status, msg...)
 }
 
-// TestTerminalWriteSurvivesAnExpiredJobContext pins the detached write. The job
-// context carries the per-job deadline, and the database driver fails every
-// query on an expired context: reusing it would leave a finished job stuck
-// Pending until its TTL while Harbor polled it.
-func TestTerminalWriteSurvivesAnExpiredJobContext(t *testing.T) {
-	base := queuedStore(t)
-	store := ctxStore{Store: base}
+func queuedCtxStore(t *testing.T) (ctxStore, persistence.Store) {
+	t.Helper()
+	base := memory.NewStore()
+	require.NoError(t, base.Create(context.Background(), job.ScanJob{ID: testJobID, Status: job.Queued}))
+	return ctxStore{Store: base}, base
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	clairClient := &fakeClair{onReport: cancel}
+// The per-job deadline firing is how most failures arrive, and the terminal
+// write must still land: pgx fails every query on an expired context, so a job
+// written on the job context would stay Pending until its TTL.
+func TestController_ScanTerminalWriteSurvivesACanceledContext(t *testing.T) {
+	t.Run("finished", func(t *testing.T) {
+		store, base := queuedCtxStore(t)
+		reg := &fakeRegistry{manifest: testManifest()}
+		cl := &fakeClair{indexReport: finishedIndexReport(), report: &clair.VulnerabilityReport{ManifestHash: artifactDigest}}
+		controller := NewController(store, cl, reg, harbor.ClairScanner())
 
-	c := NewController(store, clairClient, &fakeRegistry{manifest: manifestWithTwoLayers()}, testScanner())
-	require.NoError(t, c.Scan(ctx, testJobID, scanRequest()))
+		// The job context dies mid-scan, after the Pending write and before the
+		// Finish write, so only the detached write can land the result.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cl.onReport = cancel
+		require.NoError(t, controller.Scan(ctx, testJobID, testScanRequest()))
 
-	got, err := base.Get(context.Background(), testJobID)
+		scanJob, err := base.Get(context.Background(), testJobID)
+		require.NoError(t, err)
+		require.NotNil(t, scanJob)
+		assert.Equal(t, job.Finished, scanJob.Status, "the terminal write must not inherit the dead job context")
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		store, base := queuedCtxStore(t)
+		reg := &fakeRegistry{manifest: testManifest()}
+		controller := NewController(store, &fakeClair{}, reg, harbor.ClairScanner())
+
+		// Already canceled on entry: the Pending write fails with
+		// context.Canceled and the Failed write must still land.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		require.NoError(t, controller.Scan(ctx, testJobID, testScanRequest()))
+
+		scanJob, err := base.Get(context.Background(), testJobID)
+		require.NoError(t, err)
+		require.NotNil(t, scanJob)
+		assert.Equal(t, job.Failed, scanJob.Status, "the terminal write must not inherit the dead job context")
+		assert.Contains(t, scanJob.Error, "[timeout]")
+	})
+}
+
+// A panic in the scan path is the adapter's own bug and must be recorded as
+// such, not left to take the worker goroutine down with it.
+func TestController_ScanRecoversFromAPanic(t *testing.T) {
+	reg := &fakeRegistry{manifest: nil} // ClairManifest on a nil manifest panics.
+	controller, store := newController(t, reg, &fakeClair{})
+
+	require.NoError(t, controller.Scan(context.Background(), testJobID, testScanRequest()))
+
+	scanJob, err := store.Get(context.Background(), testJobID)
 	require.NoError(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, job.Finished, got.Status, "the terminal write must not inherit the dead job context")
+	require.NotNil(t, scanJob)
+	assert.Equal(t, job.Failed, scanJob.Status)
+	assert.Contains(t, scanJob.Error, "[adapter] scanning the artifact: panic")
+}
+
+func TestErrorCategory(t *testing.T) {
+	assert.Equal(t, "none", errorCategory(nil))
+	assert.Equal(t, "Expired", errorCategory(fmt.Errorf("wrapped: %w", persistence.ErrJobNotFound)))
+	assert.Equal(t, "auth", errorCategory(&Error{Category: CategoryAuth, Detail: "d", Cause: errors.New("c")}))
+	assert.Equal(t, "adapter", errorCategory(errors.New("something unexpected")))
 }

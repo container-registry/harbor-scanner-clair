@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
+	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
 )
 
 func TestError(t *testing.T) {
@@ -38,6 +40,11 @@ func TestCategorize(t *testing.T) {
 			err:  fmt.Errorf("scanning: %w", &Error{Category: CategoryManifest, Detail: "getting the manifest", Cause: errors.New("404")}),
 			want: CategoryManifest,
 		},
+		{name: "the registry rejects the scan token", err: fmt.Errorf("getting the manifest: %w", registry.ErrRegistryAuth), want: CategoryAuth},
+		{name: "no manifest", err: fmt.Errorf("getting the manifest: %w", registry.ErrManifestNotFound), want: CategoryManifest},
+		{name: "the manifest could not be fetched", err: fmt.Errorf("getting the manifest: %w", registry.ErrManifestFetch), want: CategoryManifest},
+		{name: "an index or a zero-layer artifact", err: fmt.Errorf("getting the manifest: %w", registry.ErrUnsupportedArtifact), want: CategoryUnscannable},
+		{name: "a layer that is not a tarball", err: fmt.Errorf("getting the manifest: %w", registry.ErrUnscannableLayer), want: CategoryUnscannable},
 		{name: "unauthorized", err: fmt.Errorf("indexing: %w", clair.ErrUnauthorized), want: CategoryAuth},
 		{name: "unscannable layer", err: fmt.Errorf("indexing: %w", clair.ErrUnscannableLayer), want: CategoryUnscannable},
 		{name: "index failed", err: fmt.Errorf("indexing: %w", clair.ErrIndexFailed), want: CategoryClairIndex},
