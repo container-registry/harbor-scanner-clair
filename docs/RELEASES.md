@@ -81,12 +81,9 @@ else.
 | `feat!:` or `BREAKING CHANGE:` | Adapter: Major. Chart: Minor while pre-1.0, via `bump-minor-pre-major` | Breaking changes |
 | `feat:` | Minor | Features |
 | `fix:` | Patch | Bug Fixes |
-| `perf:`, `upstream:`, `revert:`, `refactor:`, `docs:` | Patch | Performance Improvements, Upstream, Reverts, Code Refactoring, Documentation |
+| `perf:`, `revert:`, `refactor:`, `docs:` | Patch | Performance Improvements, Reverts, Code Refactoring, Documentation |
 | `chore:` | Adapter: hidden, no release. Chart: Patch | Chart only: Miscellaneous. This is what carries an adapter release (`chore: release adapter X.Y.Z` stamps `appVersion`) into a chart release |
 | `ci:`, `build:`, `test:` | Hidden, no release | - |
-
-Use `upstream:` for changes synced from `goharbor/harbor-scanner-clair`. The
-cherry-pick workflow writes that type into the PR title for you.
 
 The same rules apply to both lines, except that `chore:` is shown only in the
 chart changelog. Which line a commit lands on is decided by its paths: the
@@ -99,6 +96,20 @@ paths the adapter ignores. One file outside, even `README.md`, puts the commit
 in the adapter changelog and bumps the adapter version. The `Chart Scope Paths`
 check fails such a PR; split it rather than retype it. When `exclude-paths` in
 `.release-please/config-adapter.json` changes, update that check's patterns too.
+
+The Clair v4 rewrite ships as a `feat!:` squash title, so release-please bumps
+the adapter to `2.0.0`. The chart is unaffected by that marker: pre-1.0 it is
+governed by `bump-minor-pre-major` and `initial-version: 0.1.0`, which turn a
+breaking chart change into a minor bump.
+
+Never merge a chart release PR before the adapter version its `appVersion` names
+has a published image. The chart publish job does not wait on an image build,
+and the chart's default image tag is `.Chart.AppVersion`. `chart-v0.1.0` was
+released with `appVersion: "v1.1.1"`: the fork has never cut an adapter release,
+so `8gears.container-registry.com/8gcr/harbor-scanner-clair:v1.1.1` does not
+exist. Its publish job failed on registry login, so the tag and GitHub release
+exist but no chart was ever pushed; do not re-run that job. Read the
+`Chart.yaml` diff in the release PR before merging it.
 
 ## Tracking the base image
 
@@ -120,18 +131,6 @@ bumped as `ci(deps):`, which the adapter line hides. `TYPOS_VERSION` is
 deliberately unmanaged: its hand-computed `TYPOS_SHA256_LINUX_X86_64` companion
 has to be recomputed in the same commit, and a stale checksum failing the
 hygiene job is the reminder.
-
-## Tracking upstream goharbor
-
-`goharbor/harbor-scanner-clair` has not moved since 2020-08-20, and Harbor has
-not bundled Clair since 2.2. That is why the `Upstream Cherry-Pick` workflow is
-`workflow_dispatch`-only with no cron: a scheduled run would fetch the whole
-history twice a day to find nothing. Upstream is not archived, so the mechanism
-stays for the day something does land there.
-
-Run it by hand (`gh workflow run upstream-cherry-pick.yml -f dry_run=true` first).
-The PRs it opens are titled `upstream: <subject>`, which is a visible type, so
-merging one cuts a patch release.
 
 ## Behaviour that looks like a bug
 
@@ -257,7 +256,7 @@ Before merging a chart release PR:
 
 1. It is labelled `chart-release: pending` and titled `chore: release chart X.Y.Z`.
 2. `deploy/chart/CHANGELOG.md`, `deploy/chart/Chart.yaml` (`version`) and `deploy/chart/README.md` (the cosign example) show the new chart version. A release PR that does not touch `README.md` means the `x-release-please-start-version` markers broke; fix the markers before merging.
-3. `Chart.yaml` `appVersion` points at an adapter version that is **already published** as an image. The chart publish job does not wait on an image build. After an adapter release the chart changelog shows `release adapter X.Y.Z` under Miscellaneous; that entry is expected.
+3. `Chart.yaml` `appVersion` points at an adapter version that is **already published** as an image. Verify it in the PR diff, not from memory. The chart publish job does not wait on an image build. After an adapter release the chart changelog shows `release adapter X.Y.Z` under Miscellaneous; that entry is expected.
 4. Keep `release-as` **absent** from `.release-please/config-chart.json`. It is permanent, not one-shot: every later chart release would repeat the same version.
 5. Merge method is **Squash and merge**.
 6. After merge, the `chart-vX.Y.Z` tag exists, the GitHub Release is published and non-draft, `Publish Helm Chart` succeeds, and the release notes gained an `## Install` section carrying the resolved `appVersion` and the chart `cosign verify` command.
