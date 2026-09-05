@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	testJobID     = "job-1"
-	configDigest  = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	layerDigestA  = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	layerDigestB  = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-	testAuthValue = "Bearer harbor-minted-token"
+	testJobID      = "job-1"
+	configDigest   = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	layerDigestA   = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	layerDigestB   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	artifactDigest = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	testAuthValue  = "Bearer harbor-minted-token"
 )
 
 // fakeManifest is the smallest thing that satisfies distribution.Manifest; the
@@ -49,27 +50,41 @@ func (r *fakeRegistry) GetManifest(harbor.ScanRequest) (distribution.Manifest, e
 }
 
 type fakeClair struct {
-	scanned  []clair.Layer
-	envelope *clair.LayerEnvelope
-	scanErr  error
-	getErr   error
+	indexed   []clair.Manifest
+	reportFor []string
+	report    *clair.VulnerabilityReport
+	indexErr  error
+	reportErr error
+	// onReport runs after the report call, which is where a per-job deadline
+	// realistically fires.
+	onReport func()
 }
 
-func (c *fakeClair) ScanLayer(layer clair.Layer) error {
-	c.scanned = append(c.scanned, layer)
-	return c.scanErr
-}
-
-func (c *fakeClair) GetLayer(string) (*clair.LayerEnvelope, error) {
-	if c.getErr != nil {
-		return nil, c.getErr
+func (c *fakeClair) Index(_ context.Context, m clair.Manifest) (*clair.IndexReport, error) {
+	c.indexed = append(c.indexed, m)
+	if c.indexErr != nil {
+		return nil, c.indexErr
 	}
-	return c.envelope, nil
+	return &clair.IndexReport{ManifestHash: m.Hash, State: clair.StateIndexFinished, Success: true}, nil
+}
+
+func (c *fakeClair) VulnerabilityReport(_ context.Context, manifestHash string) (*clair.VulnerabilityReport, error) {
+	c.reportFor = append(c.reportFor, manifestHash)
+	if c.onReport != nil {
+		c.onReport()
+	}
+	if c.reportErr != nil {
+		return nil, c.reportErr
+	}
+	if c.report != nil {
+		return c.report, nil
+	}
+	return &clair.VulnerabilityReport{ManifestHash: manifestHash}, nil
 }
 
 func manifestWithTwoLayers() distribution.Manifest {
 	return fakeManifest{refs: []distribution.Descriptor{
-		{MediaType: "application/vnd.docker.container.image.v1+json", Digest: digest.Digest(configDigest)},
+		{MediaType: mediaTypeDockerImageConfig, Digest: digest.Digest(configDigest)},
 		{MediaType: "application/vnd.docker.image.rootfs.diff.tar.gzip", Digest: digest.Digest(layerDigestA)},
 		{MediaType: "application/vnd.docker.image.rootfs.diff.tar.gzip", Digest: digest.Digest(layerDigestB)},
 	}}
@@ -78,7 +93,7 @@ func manifestWithTwoLayers() distribution.Manifest {
 func scanRequest() harbor.ScanRequest {
 	return harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "https://core.harbor.domain", Authorization: testAuthValue},
-		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: layerDigestB},
+		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: artifactDigest},
 	}
 }
 
@@ -93,21 +108,29 @@ func queuedStore(t *testing.T) persistence.Store {
 	return store
 }
 
+func reportWithOneFinding() *clair.VulnerabilityReport {
+	return &clair.VulnerabilityReport{
+		ManifestHash: artifactDigest,
+		Packages: map[string]*clair.Package{
+			"1": {ID: "1", Name: "openssl", Version: "1.1.1"},
+		},
+		Vulnerabilities: map[string]*clair.Vulnerability{
+			"10": {
+				ID:                 "10",
+				Name:               "CVE-2019-1111",
+				NormalizedSeverity: "High",
+				Description:        "an example",
+				FixedInVersion:     "1.1.2",
+				Links:              "https://example.test/CVE-2019-1111",
+			},
+		},
+		PackageVulnerabilities: map[string][]string{"1": {"10"}},
+	}
+}
+
 func TestControllerScanHappyPath(t *testing.T) {
 	store := queuedStore(t)
-	clairClient := &fakeClair{envelope: &clair.LayerEnvelope{Layer: &clair.Layer{
-		Features: []clair.Feature{{
-			Name:    "openssl",
-			Version: "1.1.1",
-			Vulnerabilities: []clair.Vulnerability{{
-				Name:        "CVE-2019-1111",
-				Severity:    "High",
-				Description: "an example",
-				FixedBy:     "1.1.2",
-				Link:        "https://example.test/CVE-2019-1111",
-			}},
-		}},
-	}}}
+	clairClient := &fakeClair{report: reportWithOneFinding()}
 	registryClient := &fakeRegistry{manifest: manifestWithTwoLayers()}
 
 	c := NewController(store, clairClient, registryClient, testScanner())
@@ -126,14 +149,49 @@ func TestControllerScanHappyPath(t *testing.T) {
 	require.Len(t, report.Vulnerabilities, 1)
 	assert.Equal(t, "CVE-2019-1111", report.Vulnerabilities[0].ID)
 
-	// The image config is not a layer, so only the two rootfs layers are sent,
-	// each with the authorization Harbor minted for this scan.
-	require.Len(t, clairClient.scanned, 2)
-	assert.Equal(t, "https://core.harbor.domain/v2/library/alpine/blobs/"+layerDigestA, clairClient.scanned[0].Path)
-	assert.Equal(t, "https://core.harbor.domain/v2/library/alpine/blobs/"+layerDigestB, clairClient.scanned[1].Path)
-	assert.Equal(t, testAuthValue, clairClient.scanned[1].Headers["Authorization"])
-	assert.Equal(t, clairClient.scanned[0].Name, clairClient.scanned[1].ParentName,
-		"layers must be chained so Clair can reuse a shared base")
+	// One manifest describes the whole artifact: the artifact digest is the
+	// hash Clair indexes and reports under, and the image config is not a layer.
+	require.Len(t, clairClient.indexed, 1)
+	assert.Equal(t, clair.Manifest{
+		Hash: artifactDigest,
+		Layers: []clair.Layer{
+			{
+				Hash:    layerDigestA,
+				URI:     "https://core.harbor.domain/v2/library/alpine/blobs/" + layerDigestA,
+				Headers: map[string][]string{"Authorization": {testAuthValue}},
+			},
+			{
+				Hash:    layerDigestB,
+				URI:     "https://core.harbor.domain/v2/library/alpine/blobs/" + layerDigestB,
+				Headers: map[string][]string{"Authorization": {testAuthValue}},
+			},
+		},
+	}, clairClient.indexed[0])
+	assert.Equal(t, []string{artifactDigest}, clairClient.reportFor)
+}
+
+// TestToClairManifestSkipsTheImageConfig pins that both spellings of the image
+// config are skipped. Sending it makes Clair fetch a JSON blob and fail to read
+// it as a filesystem.
+func TestToClairManifestSkipsTheImageConfig(t *testing.T) {
+	manifest := fakeManifest{refs: []distribution.Descriptor{
+		{MediaType: mediaTypeOCIImageConfig, Digest: digest.Digest(configDigest)},
+		{MediaType: "application/vnd.oci.image.layer.v1.tar+gzip", Digest: digest.Digest(layerDigestA)},
+	}}
+
+	built, err := toClairManifest(scanRequest(), manifest)
+	require.NoError(t, err)
+	require.Len(t, built.Layers, 1)
+	assert.Equal(t, layerDigestA, built.Layers[0].Hash)
+}
+
+func TestToClairManifestTrimsTheRegistryURL(t *testing.T) {
+	req := scanRequest()
+	req.Registry.URL = "https://core.harbor.domain/"
+
+	built, err := toClairManifest(req, manifestWithTwoLayers())
+	require.NoError(t, err)
+	assert.Equal(t, "https://core.harbor.domain/v2/library/alpine/blobs/"+layerDigestA, built.Layers[0].URI)
 }
 
 // TestControllerScanRecordsFailures pins that every failure reaches the store as
@@ -159,16 +217,16 @@ func TestControllerScanRecordsFailures(t *testing.T) {
 			expectedErrMsg: "no scannable layers",
 		},
 		{
-			name:           "clair rejects a layer",
+			name:           "clair cannot index the artifact",
 			registry:       &fakeRegistry{manifest: manifestWithTwoLayers()},
-			clair:          &fakeClair{scanErr: errors.New("unexpected status code: 500")},
-			expectedErrMsg: "unexpected status code: 500",
+			clair:          &fakeClair{indexErr: clair.ErrIndexFailed},
+			expectedErrMsg: "indexing artifact: clair failed to index the artifact",
 		},
 		{
 			name:           "clair cannot return the report",
 			registry:       &fakeRegistry{manifest: manifestWithTwoLayers()},
-			clair:          &fakeClair{getErr: errors.New("unexpected status code: 404")},
-			expectedErrMsg: "unexpected status code: 404",
+			clair:          &fakeClair{reportErr: clair.ErrNotIndexed},
+			expectedErrMsg: "getting vulnerability report: clair has no index report",
 		},
 		{
 			// The recover() keeps one malformed artifact from taking the whole
@@ -242,10 +300,8 @@ func TestTerminalWriteSurvivesAnExpiredJobContext(t *testing.T) {
 	base := queuedStore(t)
 	store := ctxStore{Store: base}
 
-	// A clock that cancels the job context the moment the report is built, so
-	// the only write left to make is the terminal one.
 	ctx, cancel := context.WithCancel(context.Background())
-	clairClient := &cancellingClair{cancel: cancel, envelope: &clair.LayerEnvelope{Layer: &clair.Layer{}}}
+	clairClient := &fakeClair{onReport: cancel}
 
 	c := NewController(store, clairClient, &fakeRegistry{manifest: manifestWithTwoLayers()}, testScanner())
 	require.NoError(t, c.Scan(ctx, testJobID, scanRequest()))
@@ -254,18 +310,4 @@ func TestTerminalWriteSurvivesAnExpiredJobContext(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, job.Finished, got.Status, "the terminal write must not inherit the dead job context")
-}
-
-// cancellingClair cancels the job context after the last Clair call, which is
-// where a per-job deadline realistically fires.
-type cancellingClair struct {
-	cancel   context.CancelFunc
-	envelope *clair.LayerEnvelope
-}
-
-func (c *cancellingClair) ScanLayer(clair.Layer) error { return nil }
-
-func (c *cancellingClair) GetLayer(string) (*clair.LayerEnvelope, error) {
-	c.cancel()
-	return c.envelope, nil
 }
