@@ -11,11 +11,11 @@ commit-msg:
     conventional-commit:
       run: |
         msg=$(head -1 {1})
-        pattern="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|upstream)(\(.+\))?(!)?: .+"
+        pattern="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?(!)?: .+"
         if ! echo "$msg" | grep -Eq "$pattern"; then
           echo "ERROR: Commit message must follow Conventional Commits format"
           echo "  Format: <type>[optional scope]: <description>"
-          echo "  Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert, upstream"
+          echo "  Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
           echo "  Example: feat: add SBOM scan capability"
           echo "  Example: fix(queue): resolve retry backoff timing"
           echo "  Got: $msg"
