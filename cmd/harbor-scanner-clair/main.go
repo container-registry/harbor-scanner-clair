@@ -6,7 +6,7 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -43,9 +43,9 @@ var (
 // the Prometheus scrape goroutine, so it must not outlive a scrape.
 const queueDepthTimeout = 2 * time.Second
 
-// readyPingTimeout bounds the database ping behind /probe/ready, so a wedged
-// Postgres answers 503 instead of holding the probe open.
-const readyPingTimeout = 2 * time.Second
+// readyProbeTimeout bounds each backend check behind /probe/ready, so a wedged
+// Postgres or Clair answers 503 instead of holding the probe open.
+const readyProbeTimeout = 2 * time.Second
 
 // startupTimeout bounds the first connection and the schema statement. Without
 // it an unreachable database leaves the process hanging before it ever binds a
@@ -85,14 +85,7 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	// The error used to be swallowed by a format string that printed the nil
 	// client instead of the cause, so a misconfigured Clair endpoint failed
 	// with an unreadable message.
-	//
-	// Only the URL is configurable so far. The PSK, the issuer and the three
-	// timeouts arrive with the configuration rewrite; until then the client
-	// falls back to its own defaults and talks to an unauthenticated Clair.
-	clairClient, err := clair.NewClient(clair.Config{URL: config.Clair.URL}, &tls.Config{
-		RootCAs:            config.TLS.RootCAs,
-		InsecureSkipVerify: config.TLS.InsecureSkipVerify, //nolint:gosec // opt-in via SCANNER_TLS_INSECURE_SKIP_VERIFY
-	})
+	clairClient, err := clair.NewClient(config.ClairClientConfig(), config.TLS.Outbound())
 	if err != nil {
 		return fmt.Errorf("constructing clair client: %w", err)
 	}
@@ -100,14 +93,15 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	var (
 		store   persistence.Store
 		pgStore *postgres.Store
-		pool    *pgxpool.Pool
+		pinger  etc.Pinger
 	)
 	// etc.GetConfig has already normalized and validated Store.Backend, so this
 	// comparison and the readiness probe agree on the same value.
 	usePostgres := config.Store.Backend == etc.StoreBackendPostgres
 	if usePostgres {
-		if pool, err = newPool(ctx, config.Postgres); err != nil {
-			return err
+		pool, poolErr := newPool(ctx, config.Postgres)
+		if poolErr != nil {
+			return poolErr
 		}
 		defer pool.Close()
 
@@ -120,15 +114,22 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 			return err
 		}
 		store = pgStore
+		pinger = pgStore
 	} else {
 		store = memory.NewStore()
+	}
+
+	// Fail fast rather than accept scans that are all going to fail: unreadable
+	// TLS material, an unreachable Postgres, an unreachable Clair indexer.
+	if err := etc.Check(ctx, config, pinger, clairIndexerPinger{client: clairClient}); err != nil {
+		return fmt.Errorf("startup check: %w", err)
 	}
 
 	scanner := harbor.ClairScanner()
 	controller := scan.NewController(
 		store,
 		clairClient,
-		registry.NewClientFactory(config.TLS).Get(),
+		registry.NewClient(registry.Config{RequestTimeout: config.Clair.RequestTimeout}, config.TLS.Outbound()),
 		scanner,
 	)
 
@@ -160,13 +161,27 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		return float64(n)
 	})
 
+	// Readiness is the one place the matcher is checked. On a fresh Clair it is
+	// uninitialized for the whole first updater cycle, and reporting NotReady
+	// for that time is far better than accepting scans that cannot be answered.
 	ready := func(rctx context.Context) error {
-		if pgStore == nil {
-			return nil
+		if pgStore != nil {
+			pingCtx, cancel := context.WithTimeout(rctx, readyProbeTimeout)
+			defer cancel()
+			if err := pgStore.Ping(pingCtx); err != nil {
+				return err
+			}
 		}
-		pingCtx, cancel := context.WithTimeout(rctx, readyPingTimeout)
+		matcherCtx, cancel := context.WithTimeout(rctx, readyProbeTimeout)
 		defer cancel()
-		return pgStore.Ping(pingCtx)
+		matcherReady, err := clairClient.MatcherReady(matcherCtx)
+		if err != nil {
+			return fmt.Errorf("clair matcher: %w", err)
+		}
+		if !matcherReady {
+			return errors.New("clair's matcher has not finished its first vulnerability update")
+		}
+		return nil
 	}
 
 	// The vulnerability-database timestamp is injected rather than read from the
@@ -205,6 +220,10 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	// propagate out of run; a nil one means Shutdown closed the listener, so the
 	// only thing left is to wait for the signal handler to finish cleanup.
 	if err := <-apiServer.ListenAndServe(); err != nil {
+		// Stop the workers before the deferred pool.Close: a bind failure
+		// otherwise leaves claim loops running against a closed pool, and the
+		// errors they log bury the one that actually killed the process.
+		worker.Stop()
 		return fmt.Errorf("api server: %w", err)
 	}
 	<-shutdownComplete
@@ -233,4 +252,16 @@ func newPool(ctx context.Context, config etc.Postgres) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("connecting to postgres: %w", err)
 	}
 	return pool, nil
+}
+
+// clairIndexerPinger adapts the Clair client to the startup check. It reads the
+// indexer's state, which is the cheapest call that proves the endpoint is Clair,
+// is reachable, and accepts the adapter's credentials.
+type clairIndexerPinger struct {
+	client clair.Client
+}
+
+func (p clairIndexerPinger) Ping(ctx context.Context) error {
+	_, err := p.client.IndexState(ctx)
+	return err
 }
