@@ -1,0 +1,124 @@
+---
+# The job store. The adapter keeps one row per scan job in PostgreSQL, so the
+# DSN is the second thing (after clair.url) an install cannot do without, and
+# it is a credential: these tests pin how it reaches the container and how it
+# does not.
+suite: postgres job store
+release:
+  name: t
+tests:
+  - it: writes an inlined DSN to the chart-managed Secret
+    templates:
+      - secret.yaml
+    set:
+      postgres.url: postgres://u:p@h:5432/scanner?sslmode=disable
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: metadata.name
+          value: t-harbor-scanner-clair
+      - equal:
+          path: data.url
+          value: cG9zdGdyZXM6Ly91OnBAaDo1NDMyL3NjYW5uZXI/c3NsbW9kZT1kaXNhYmxl
+      - notExists:
+          path: data.psk
+
+  - it: reads an inlined DSN back through a secretKeyRef, never as a literal
+    templates:
+      - deployment.yaml
+    set:
+      postgres.url: postgres://u:p@h:5432/scanner?sslmode=disable
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_POSTGRES_URL
+            valueFrom:
+              secretKeyRef:
+                name: t-harbor-scanner-clair
+                key: url
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_POSTGRES_URL
+            value: postgres://u:p@h:5432/scanner?sslmode=disable
+          any: true
+
+  - it: points at a Secret you own instead, under its own key
+    templates:
+      - deployment.yaml
+    set:
+      postgres.existingSecret: harbor-scanner-clair-postgres
+      postgres.existingSecretKey: dsn
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_POSTGRES_URL
+            valueFrom:
+              secretKeyRef:
+                name: harbor-scanner-clair-postgres
+                key: dsn
+
+  - it: keeps the DSN out of the chart-managed Secret when the Secret is yours
+    templates:
+      - secret.yaml
+    set:
+      postgres.existingSecret: harbor-scanner-clair-postgres
+    asserts:
+      # postgres.url still holds the chart default here: an externally owned
+      # Secret wins over it, so copying the default into a Secret the chart
+      # owns would leak a stale DSN into the release.
+      - hasDocuments:
+          count: 0
+
+  - it: emits no DSN at all on the memory backend
+    templates:
+      - deployment.yaml
+      - secret.yaml
+    set:
+      store.backend: memory
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_POSTGRES_URL
+          any: true
+        template: deployment.yaml
+      - hasDocuments:
+          count: 0
+        template: secret.yaml
+
+  - it: emits none of the variables the Redis store used to read
+    templates:
+      - deployment.yaml
+    asserts:
+      # 2.0.0 replaced the Redis store and queue with the Postgres table. Each
+      # of these names is silently ignored by the adapter, so a leftover would
+      # be a chart that renders happily and configures nothing.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_REDIS_URL
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_REDIS_NAMESPACE
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_JOB_QUEUE_REDIS_NAMESPACE
+          any: true

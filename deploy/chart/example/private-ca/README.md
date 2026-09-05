@@ -1,7 +1,8 @@
-# Registry, Redis or Clair behind a private CA
+# Registry, PostgreSQL or Clair behind a private CA
 
-The adapter pulls image manifests over TLS and talks to Clair over HTTP or
-HTTPS, and it is a Go program throughout. `extraCA` mounts your PEM bundle and
+The adapter pulls image manifests over TLS, talks to Clair over HTTP or HTTPS,
+and reaches its own database with whatever `sslmode` the DSN asks for. It is a
+Go program throughout. `extraCA` mounts your PEM bundle and
 makes the adapter trust it, which covers every outbound TLS call it makes.
 
 ```sh
@@ -39,6 +40,9 @@ kubectl -n harbor exec deploy/harbor-scanner-clair -- \
   ls /etc/scanner-clair/extra-ca
 kubectl -n harbor logs deploy/harbor-scanner-clair | grep -i "certificate\|x509"
 ```
+
+Clair needs the same CA in its own trust store if the registry is behind one:
+Clair pulls the layer blobs itself, and `extraCA` reaches only the adapter.
 
 An `x509: certificate signed by unknown authority` in the logs means the bundle
 is missing the issuer, not that the mount failed. A startup failure naming

@@ -126,22 +126,49 @@ TLS. Non-empty output means the API serves HTTPS.
 {{- end -}}
 
 {{/*
-Clair database URL source. Non-empty output is the Secret name holding the
-PostgreSQL DSN.
+Clair pre-shared key source. Non-empty output is the Secret name holding the
+base64 PSK; empty means no PSK is configured and the adapter sends no
+Authorization header.
 */}}
-{{- define "harbor-scanner-clair.clair.databaseSecretName" -}}
+{{- define "harbor-scanner-clair.clair.pskSecretName" -}}
 {{- if .Values.clair.existingSecret -}}
 {{- .Values.clair.existingSecret -}}
-{{- else if .Values.clair.databaseUrl -}}
+{{- else if .Values.clair.psk -}}
 {{- include "harbor-scanner-clair.fullname" . -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "harbor-scanner-clair.clair.databaseSecretKey" -}}
+{{- define "harbor-scanner-clair.clair.pskSecretKey" -}}
 {{- if .Values.clair.existingSecret -}}
 {{- .Values.clair.existingSecretKey -}}
 {{- else -}}
-databaseUrl
+psk
+{{- end -}}
+{{- end -}}
+
+{{/*
+Job store DSN source. Non-empty output is the Secret name holding the complete
+connection string; empty means the memory backend, which needs no database.
+
+The DSN is never inlined into the pod spec, unlike the Clair URL next to it: a
+connection string carries the password in its userinfo, so a DSN set in values
+goes through the chart-managed Secret instead.
+*/}}
+{{- define "harbor-scanner-clair.postgres.secretName" -}}
+{{- if eq .Values.store.backend "postgres" -}}
+{{- if .Values.postgres.existingSecret -}}
+{{- .Values.postgres.existingSecret -}}
+{{- else if .Values.postgres.url -}}
+{{- include "harbor-scanner-clair.fullname" . -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "harbor-scanner-clair.postgres.secretKey" -}}
+{{- if .Values.postgres.existingSecret -}}
+{{- .Values.postgres.existingSecretKey -}}
+{{- else -}}
+url
 {{- end -}}
 {{- end -}}
 
@@ -245,7 +272,7 @@ the user claimed through .Values.config / .Values.secret.
 {{- define "harbor-scanner-clair.chartEnv" -}}
 {{- $tls := include "harbor-scanner-clair.tls.enabled" . -}}
 {{- $extraCA := include "harbor-scanner-clair.extraCA.enabled" . -}}
-{{- $databaseSecret := include "harbor-scanner-clair.clair.databaseSecretName" . -}}
+{{- $pskSecret := include "harbor-scanner-clair.clair.pskSecretName" . -}}
 - name: SCANNER_LOG_LEVEL
   value: {{ .Values.logLevel | quote }}
 - name: SCANNER_API_SERVER_ADDR
@@ -256,6 +283,8 @@ the user claimed through .Values.config / .Values.secret.
   value: {{ .Values.api.writeTimeout | quote }}
 - name: SCANNER_API_SERVER_IDLE_TIMEOUT
   value: {{ .Values.api.idleTimeout | quote }}
+- name: SCANNER_API_SERVER_METRICS_ENABLED
+  value: {{ .Values.metrics.enabled | quote }}
 {{- if $tls }}
 - name: SCANNER_API_SERVER_TLS_CERTIFICATE
   value: /certs/tls.crt
@@ -264,45 +293,44 @@ the user claimed through .Values.config / .Values.secret.
 {{- end }}
 - name: SCANNER_CLAIR_URL
   value: {{ .Values.clair.url | quote }}
-{{- if $databaseSecret }}
-{{- /* The DSN carries the PostgreSQL password, so it is read from the
-       Secret rather than inlined into the pod spec. */}}
-- name: SCANNER_CLAIR_DATABASE_URL
+{{- if $pskSecret }}
+{{- /* The value is a credential, so it is read from the Secret rather than
+       inlined into the pod spec. The PSK is base64 text and the Secret `data`
+       layer base64-encodes it again: that double encoding is correct, because
+       `data:` is always base64 of the raw value and the raw value here is
+       itself base64, which is the form Clair's auth.psk.key takes. */}}
+- name: SCANNER_CLAIR_PSK
   valueFrom:
     secretKeyRef:
-      name: {{ $databaseSecret }}
-      key: {{ include "harbor-scanner-clair.clair.databaseSecretKey" . }}
+      name: {{ $pskSecret }}
+      key: {{ include "harbor-scanner-clair.clair.pskSecretKey" . }}
 {{- end }}
-{{- if .Values.redis.existingSecret }}
-{{- /* The URL carries the Redis password, so it is read from the
-       Secret rather than inlined into the pod spec. */}}
-- name: SCANNER_STORE_REDIS_URL
+- name: SCANNER_CLAIR_JWT_ISSUER
+  value: {{ .Values.clair.jwtIssuer | quote }}
+- name: SCANNER_CLAIR_INDEX_TIMEOUT
+  value: {{ .Values.clair.indexTimeout | quote }}
+- name: SCANNER_CLAIR_REQUEST_TIMEOUT
+  value: {{ .Values.clair.requestTimeout | quote }}
+{{- /* Unconditional, like the TTL and the concurrency below: the adapter's own
+      defaults are real defaults, not a "derive it for me" signal, so the chart
+      states what it wants rather than leaving the value to drift with the
+      image. */}}
+- name: SCANNER_STORE_BACKEND
+  value: {{ .Values.store.backend | quote }}
+{{- with (include "harbor-scanner-clair.postgres.secretName" .) }}
+{{- /* Always a secretKeyRef, never a literal: the DSN carries the password in
+       its userinfo. Emitted only on the postgres backend, so a memory install
+       carries no dead reference to a Secret that need not exist. */}}
+- name: SCANNER_STORE_POSTGRES_URL
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.redis.existingSecret }}
-      key: {{ .Values.redis.existingSecretKey }}
-{{- else }}
-- name: SCANNER_STORE_REDIS_URL
-  value: {{ .Values.redis.url | quote }}
+      name: {{ . }}
+      key: {{ include "harbor-scanner-clair.postgres.secretKey" $ }}
 {{- end }}
-- name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
-  value: {{ .Values.redis.pool.maxActive | quote }}
-- name: SCANNER_STORE_REDIS_POOL_MAX_IDLE
-  value: {{ .Values.redis.pool.maxIdle | quote }}
-- name: SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT
-  value: {{ .Values.redis.pool.idleTimeout | quote }}
-- name: SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT
-  value: {{ .Values.redis.pool.connectionTimeout | quote }}
-- name: SCANNER_STORE_REDIS_POOL_READ_TIMEOUT
-  value: {{ .Values.redis.pool.readTimeout | quote }}
-- name: SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT
-  value: {{ .Values.redis.pool.writeTimeout | quote }}
-- name: SCANNER_STORE_REDIS_NAMESPACE
-  value: {{ .Values.store.redisNamespace | quote }}
-{{- /* Unconditional: the adapter's own default is 1h, so an unset value is
-      not a "derive it for me" signal the way it is in other adapters. */}}
-- name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
-  value: {{ .Values.store.redisScanJobTTL | quote }}
+- name: SCANNER_STORE_SCAN_JOB_TTL
+  value: {{ .Values.store.scanJobTTL | quote }}
+- name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+  value: {{ .Values.jobQueue.workerConcurrency | quote }}
 - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
   value: {{ .Values.tls.insecureSkipVerify | quote }}
 {{- with (include "harbor-scanner-clair.extraCA.certPaths" .) }}

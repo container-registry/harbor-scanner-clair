@@ -21,20 +21,20 @@ spec:
   values:
     # PLACEHOLDER DIGEST - replace before applying, this one resolves to nothing.
     # Get the real one with:
-    #   crane digest 8gears.container-registry.com/8gcr/harbor-scanner-clair:v1.1.1
+    #   crane digest 8gears.container-registry.com/8gcr/harbor-scanner-clair:v2.0.0
     # Digest-pinned rather than tagged: a floating tag would let the running
     # image drift away from what Git says without any Git change.
     image:
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
-    redis:
-      existingSecret: harbor-scanner-clair-redis
+    postgres:
+      existingSecret: harbor-scanner-clair-postgres
       existingSecretKey: url
 
     clair:
       url: http://clair.clair.svc:6060
-      existingSecret: harbor-scanner-clair-database
-      existingSecretKey: databaseUrl
+      existingSecret: harbor-scanner-clair-psk
+      existingSecretKey: psk
 
     resources:
       requests:
