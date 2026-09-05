@@ -2,8 +2,8 @@
 apiVersion: v2
 name: harbor-scanner-clair
 description: A production-ready Helm chart for the Harbor Scanner Adapter for
-  Clair - the vulnerability scanner adapter that fronts an external CoreOS Clair
-  2.x.
+  Clair - the vulnerability scanner adapter that fronts an external Clair 4.x
+  (Project Quay).
 type: application
 version: 0.1.0
 # appVersion tracks the adapter release; the app release-please line rewrites
@@ -19,7 +19,7 @@ sources:
 keywords:
   - harbor
   - clair
-  - coreos
+  - projectquay
   - scanner
   - vulnerability
   - vulnerability-scanning
@@ -49,7 +49,7 @@ annotations:
       url: https://github.com/container-registry/harbor-scanner-clair/tree/main/deploy/chart
     - name: Verifying the chart signature (cosign, keyless)
       url: https://github.com/container-registry/harbor-scanner-clair/blob/main/deploy/chart/README.md#verifying-the-chart-signature
-    - name: Clair 2.x prerequisite
+    - name: Clair 4.x prerequisite
       url: https://github.com/container-registry/harbor-scanner-clair/blob/main/deploy/chart/README.md#prerequisites
     - name: Moving from the kube/ manifests
       url: https://github.com/container-registry/harbor-scanner-clair/blob/main/deploy/chart/docs/FROM-KUBE-MANIFESTS.md

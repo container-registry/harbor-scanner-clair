@@ -20,8 +20,10 @@ securityContext:
     drop:
       - ALL
 
-redis:
-  url: redis://harbor-redis:6379/5
+postgres:
+  # The DSN for the `scanner` database on Clair's PostgreSQL; see
+  # ../external-clair/README.md for the Secret.
+  existingSecret: harbor-scanner-clair-postgres
 
 clair:
   url: http://clair.clair.svc:6060
