@@ -2,10 +2,13 @@
 # Adapter pointed at the Clair deployed by clair.yaml in this directory.
 clair:
   url: http://clair.clair.svc:6060
-  # Only used for the vulnerability-database timestamp in /api/v1/metadata.
-  # Drop it and scanning still works, Harbor just shows no database age.
-  existingSecret: clair-database-dsn
-  existingSecretKey: databaseUrl
+  # Created by the kubectl command in README.md, in the adapter's namespace,
+  # holding the same key as clair.yaml's auth.psk.key.
+  existingSecret: clair-psk
+  existingSecretKey: psk
 
-redis:
-  url: redis://harbor-redis:6379/5
+postgres:
+  # Created by the second kubectl command in README.md, in the adapter's
+  # namespace, holding the DSN for the `scanner` database on Clair's PostgreSQL.
+  existingSecret: harbor-scanner-clair-postgres
+  existingSecretKey: url

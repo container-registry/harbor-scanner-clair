@@ -1,40 +1,88 @@
 ---
-# Evaluation-grade CoreOS Clair 2.x. NOT for production and NOT supported by
-# this project: Clair 2.x is end of life, and this manifest exists so the
-# adapter has something to talk to while you evaluate it.
+# Evaluation-grade Clair 4.x in combo mode: indexer, matcher and notifier in one
+# process against one database. Enough to evaluate the adapter, and a starting
+# point for a real deployment rather than a substitute for one.
 #
-# goharbor/clair-photon is Harbor's own build of Clair 2.x. It is the last one
-# that is still anonymously pullable; quay.io/coreos/clair returns 401 to
-# anonymous clients.
+# The whole configuration is a Secret, not a ConfigMap, because Clair has no
+# environment override for any config key (only CLAIR_MODE and CLAIR_CONF), so
+# the file has to carry both the database password and the pre-shared key. If
+# you externalise the database password some other way, a ConfigMap works
+# identically.
+#
+# Every key below was validated against the 4.9.0 image with
+# `clairctl check-config`. An unknown key aborts startup rather than warning, so
+# re-run it after any edit. check-config takes the bare Clair config, not the
+# Kubernetes manifest, so extract the config.yaml key from the Secret first:
+#
+#   yq 'select(.kind == "Secret") | .stringData["config.yaml"]' clair.yaml > config.yaml
+#   docker run --rm -v "$PWD:/config:ro" --entrypoint /usr/bin/clairctl \
+#     quay.io/projectquay/clair:4.9.0 check-config /config/config.yaml
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: clair
----
-apiVersion: v1
-kind: ConfigMap
+kind: Secret
 metadata:
   name: clair-config
   namespace: clair
-data:
-  # The image's entrypoint runs `clair -config /etc/clair/config.yaml`, so the
-  # path below is fixed, not a choice.
+type: Opaque
+stringData:
   config.yaml: |
-    clair:
-      database:
-        type: pgsql
-        options:
-          source: "postgresql://clair:REPLACE_ME@clair-postgres:5432/clair?sslmode=disable"
-          cachesize: 16384
-      api:
-        port: 6060
-        healthport: 6061
-        timeout: 900s
-      updater:
-        # Clair fetches its own vulnerability feeds. Several upstream sources
-        # (Oracle, Amazon Linux) now answer 403/429 to this client, which shows
-        # up as `could not download requested resource` and is not fatal.
-        interval: 12h
+    http_listen_addr: ":6060"
+    # Health and metrics, deliberately on their own port: the introspection
+    # server sits outside the PSK authentication middleware, so probes work
+    # without a token while the API on 6060 stays protected.
+    introspection_addr: ":8089"
+    log_level: "info"
+
+    indexer:
+      connstring: "host=clair-postgres.clair.svc port=5432 user=clair password=REPLACE_ME dbname=clair sslmode=disable"
+      scanlock_retry: 10
+      layer_scan_concurrency: 5
+      migrations: true
+      # Clair pulls every layer itself over HTTP. RFC 1918 and RFC 4193
+      # addresses stay reachable even with airgap on, so an in-cluster Harbor
+      # still works; set true to block egress to the public internet.
+      airgap: false
+
+    matcher:
+      connstring: "host=clair-postgres.clair.svc port=5432 user=clair password=REPLACE_ME dbname=clair sslmode=disable"
+      indexer_addr: "http://localhost:6060"
+      migrations: true
+      # Default. check-config lints anything below 6h as too aggressive: most
+      # sources publish daily.
+      period: "6h"
+      disable_updaters: false
+
+    # Required in combo mode even with no delivery mechanism configured; Clair
+    # then logs `notifier disabled` and the service does not run. The intervals
+    # are 1h because check-config lints the 5m/1m defaults as very fast.
+    notifier:
+      connstring: "host=clair-postgres.clair.svc port=5432 user=clair password=REPLACE_ME dbname=clair sslmode=disable"
+      migrations: true
+      delivery_interval: "1h"
+      poll_interval: "1h"
+
+    # Combo mode registers every default updater unless the set is limited, and
+    # the set is the only lever on how long the first cycle takes and how much
+    # it downloads. `clair.cvss` is its own set and is what puts CVSS scores in
+    # the report: without it every `enrichments` map comes back empty.
+    updaters:
+      sets:
+        - "alpine"
+        - "debian"
+        - "ubuntu"
+        - "clair.cvss"
+
+    auth:
+      psk:
+        # base64, the same bytes the adapter gets in SCANNER_CLAIR_PSK.
+        key: "REPLACE_ME_BASE64"
+        iss:
+          # Must contain the adapter's SCANNER_CLAIR_JWT_ISSUER, which the chart
+          # sets from clair.jwtIssuer. Clair always accepts its own
+          # `clair-intraservice` issuer on top of this list.
+          - "harbor-scanner-clair"
+
+    metrics:
+      name: "prometheus"
 ---
 apiVersion: v1
 kind: Service
@@ -48,9 +96,9 @@ spec:
     - name: api
       port: 6060
       targetPort: 6060
-    - name: health
-      port: 6061
-      targetPort: 6061
+    - name: introspection
+      port: 8089
+      targetPort: 8089
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -67,31 +115,60 @@ spec:
       labels:
         app: clair
     spec:
+      securityContext:
+        # The image runs as nobody:nobody; naming it here makes the emptyDir
+        # spool below group-writable for that user.
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        fsGroup: 65534
       containers:
         - name: clair
-          image: goharbor/clair-photon:v1.10.19
+          image: quay.io/projectquay/clair:4.9.0
+          env:
+            - name: CLAIR_MODE
+              value: combo
+            - name: CLAIR_CONF
+              value: /etc/clair/config.yaml
+            - name: TMPDIR
+              value: /var/tmp
+          # No resources block here on purpose, but size one before you rely on
+          # this: the first update cycle is the memory peak, not steady state.
+          # Measured on 4.9.0 with the four updater sets above trimmed to
+          # [alpine, clair.cvss]: 1805 MiB peak during the NVD walk, 228 MiB
+          # once it finished. The CVSS enricher is the whole spike, and
+          # GOMEMLIMIT=1GiB keeps it in check at the cost of more GC.
           ports:
             - name: api
               containerPort: 6060
-            - name: health
-              containerPort: 6061
+            - name: introspection
+              containerPort: 8089
           readinessProbe:
             httpGet:
-              path: /health
-              port: health
+              path: /readyz
+              port: introspection
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /health
-              port: health
+              path: /healthz
+              port: introspection
             initialDelaySeconds: 30
             periodSeconds: 30
           volumeMounts:
             - name: config
               mountPath: /etc/clair
               readOnly: true
+            - name: spool
+              mountPath: /var/tmp
       volumes:
         - name: config
-          configMap:
-            name: clair-config
+          secret:
+            secretName: clair-config
+        # Clair decompresses layers here while indexing. The deployment howto's
+        # rule of thumb is roughly twice the largest uncompressed layer in the
+        # corpus, so a few GiB to start; a tiny or read-only spool fails
+        # indexing on the first real image.
+        - name: spool
+          emptyDir:
+            sizeLimit: 4Gi

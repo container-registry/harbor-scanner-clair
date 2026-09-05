@@ -22,26 +22,47 @@ scan, so it fails `helm template` instead.
 
 {{/*
 The adapter has one required setting: where Clair is. An empty URL leaves it
-dialling nothing and every scan fails at the first POST /v1/layers.
+dialling nothing and every scan fails at the first index_report request.
 */}}
 {{- if not .Values.clair.url }}
-{{- fail "clair.url must name the Clair 2.x API endpoint the adapter posts layers to; the chart does not deploy Clair." }}
+{{- fail "clair.url must name the Clair 4.x API endpoint the adapter indexes against; the chart does not deploy Clair." }}
 {{- end }}
 
 {{- if and .Values.clair.existingSecret (not .Values.clair.existingSecretKey) }}
-{{- fail "clair.existingSecretKey must name the key holding the Clair database DSN in clair.existingSecret." }}
+{{- fail "clair.existingSecretKey must name the key holding the base64 pre-shared key in clair.existingSecret." }}
 {{- end }}
 
-{{- if and .Values.clair.existingSecret .Values.clair.databaseUrl }}
-{{- fail "Set either clair.existingSecret or clair.databaseUrl, not both." }}
+{{- if and .Values.clair.existingSecret .Values.clair.psk }}
+{{- fail "Set either clair.existingSecret or clair.psk, not both." }}
 {{- end }}
 
-{{- if and .Values.redis.existingSecret (not .Values.redis.existingSecretKey) }}
-{{- fail "redis.existingSecretKey must name the key holding the Redis URL in redis.existingSecret." }}
+{{- if and (include "harbor-scanner-clair.clair.pskSecretName" .) (not .Values.clair.jwtIssuer) }}
+{{- fail "clair.jwtIssuer must not be empty when a pre-shared key is set: Clair validates the JWT `iss` claim against its auth.psk.iss allow-list, and an empty issuer matches nothing." }}
 {{- end }}
 
-{{- if and (not .Values.redis.existingSecret) (not .Values.redis.url) }}
-{{- fail "Set redis.url, or redis.existingSecret to read the URL from a Secret." }}
+{{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.enabled) }}
+{{- fail "metrics.serviceMonitor.enabled requires metrics.enabled: the adapter would serve no /metrics endpoint to scrape." }}
+{{- end }}
+
+{{- if eq .Values.store.backend "memory" }}
+{{- if or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled }}
+{{- fail "store.backend: memory keeps scan reports in one pod's memory, so a second replica answers Harbor's report poll with 404. Use the postgres backend, or pin replicaCount to 1 with autoscaling off." }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.postgres.existingSecret (not .Values.postgres.existingSecretKey) }}
+{{- fail "postgres.existingSecretKey must name the key holding the connection string in postgres.existingSecret." }}
+{{- end }}
+
+{{/*
+The postgres backend cannot run without a database: the adapter opens the pool
+and creates its scan_job table at startup, and with no DSN it exits before
+serving anything.
+*/}}
+{{- if eq .Values.store.backend "postgres" }}
+{{- if not (or .Values.postgres.url .Values.postgres.existingSecret) }}
+{{- fail "store.backend: postgres needs a database: set postgres.url, or postgres.existingSecret to read the connection string from a Secret. This chart deploys no PostgreSQL; the adapter's table belongs in its own database on Clair's instance, which example/external-clair/ creates." }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -85,11 +106,11 @@ anything that can read ConfigMaps in the namespace. Credential-shaped names are
 almost always a mistake here, and `secret` takes the identical notation.
 */}}
 {{- range $name, $value := (include "harbor-scanner-clair.toEnvVars" (dict "values" (.Values.config | default dict) "prefix" "" "isSecret" false) | fromYaml) }}
-{{- if regexMatch "(TOKEN|PASSWORD|PASSWD|SECRET|APIKEY|API_KEY|CREDENTIAL)" $name }}
+{{- if regexMatch "(TOKEN|PASSWORD|PASSWD|SECRET|APIKEY|API_KEY|CREDENTIAL|PSK)" $name }}
 {{- fail (printf "config.%s renders into a ConfigMap, which is not secret. Move it to `secret`, which takes the same notation." $name) }}
 {{- end }}
-{{- /* The name says nothing for SCANNER_STORE_REDIS_URL and friends, where the
-       password rides inside the value as userinfo. */}}
+{{- /* The name says nothing for SCANNER_STORE_POSTGRES_URL and friends, where
+       the password rides inside the value as userinfo. */}}
 {{- if regexMatch "://[^/@[:space:]]*:[^/@[:space:]]+@" (toString $value) }}
 {{- fail (printf "config.%s embeds credentials in a URL, and config renders into a ConfigMap. Move it to `secret`, which takes the same notation." $name) }}
 {{- end }}
@@ -122,9 +143,9 @@ setting simply never arrives. Fail here instead.
 {{- end }}
 
 {{/*
-The key-name check above catches SCANNER_CLAIR_DATABASE_URL only by luck of its
-name; a credential also hides inside a URL value - postgres://user:pass@host is
-the common one - and that lands in the ConfigMap just the same.
+The key-name check above catches SCANNER_CLAIR_PSK and SCANNER_API_AUTH_API_KEY
+by name; a credential also hides inside a URL value - postgres://user:pass@host
+is the common one - and that lands in the ConfigMap just the same.
 */}}
 {{- range $name, $value := (include "harbor-scanner-clair.toEnvVars" (dict "values" (.Values.config | default dict) "prefix" "" "isSecret" false) | fromYaml) }}
 {{- if regexMatch "^[a-zA-Z][a-zA-Z0-9+.-]*://[^/@\\s]*:[^/@\\s]+@" (toString $value) }}

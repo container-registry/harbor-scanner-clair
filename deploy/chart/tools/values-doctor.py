@@ -11,9 +11,21 @@ Usage: tools/values-doctor.py <values.yaml> [<values.yaml> ...]
 """
 
 import math
+import re
 import sys
 
 import yaml
+
+# Go duration units in seconds. time.ParseDuration accepts a concatenation of
+# them ("1h30m"), which is what values.schema.json's pattern allows through.
+_DURATION_UNITS = {
+    "ns": 1e-9,
+    "us": 1e-6,
+    "ms": 1e-3,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+}
 
 
 def get(values, path, default=None):
@@ -56,6 +68,15 @@ def flatten(node, prefix=""):
         elif value is not None:
             out[name] = str(value)
     return out
+
+
+def parse_duration(value):
+    """Seconds in a Go duration string, or None when it is not one."""
+    text = str(value).strip()
+    parts = re.findall(r"([0-9]+(?:\.[0-9]+)?)(ns|us|ms|s|m|h)", text)
+    if not parts or "".join(n + u for n, u in parts) != text:
+        return None
+    return sum(float(number) * _DURATION_UNITS[unit] for number, unit in parts)
 
 
 def budget_blocks_eviction(budget, replicas, is_min):
@@ -105,20 +126,15 @@ def check(values):
     else:
         replicas = int(get(values, "replicaCount", 1))
 
-    # Credentials that end up readable in the pod spec.
-    url = str(get(values, "redis.url", ""))
-    if not get(values, "redis.existingSecret") and "@" in url.split("//", 1)[-1]:
+    # Credentials that end up readable in the pod spec. The store DSN is not
+    # among them: the chart always reads it through a secretKeyRef, so an
+    # inlined postgres.url reaches the release but never the pod spec.
+    if get(values, "clair.psk") and not get(values, "clair.existingSecret"):
         warn(
-            "redis.url",
-            "embeds a password, which lands in the pod spec in clear text. "
-            "Use redis.existingSecret.",
-        )
-    if get(values, "clair.databaseUrl") and not get(values, "clair.existingSecret"):
-        warn(
-            "clair.databaseUrl",
-            "is a PostgreSQL DSN inlined into the release, password included. "
-            "Use clair.existingSecret for anything longer-lived than a test "
-            "install.",
+            "clair.psk",
+            "is the key that authenticates every call to Clair, inlined into "
+            "the release. Use clair.existingSecret for anything longer-lived "
+            "than a test install.",
         )
     if get(values, "api.tls.key") and not get(values, "api.tls.existingSecret"):
         warn(
@@ -191,12 +207,39 @@ def check(values):
             )
 
     # An encrypted front door in front of a plaintext back door.
-    clair_url = str(effective(values, "clair.url", "SCANNER_CLAIR_URL", ""))
+    clair_url = str(effective(values, "clair.url", "SCANNER_CLAIR_URL", "http://clair:6060"))
     if get(values, "api.tls.enabled", False) and clair_url.startswith("http://"):
         warn(
             "clair.url",
             "is plaintext while the adapter's own API serves TLS. Scan requests "
-            "are encrypted, the layer traffic to Clair is not.",
+            "are encrypted, the manifest and report traffic to Clair is not.",
+        )
+
+    # The multi-replica case is a render-time ERROR (templates/validate-values.yaml),
+    # so only the single-replica warning is left to make.
+    if str(effective(values, "store.backend", "SCANNER_STORE_BACKEND", "postgres")) == "memory":
+        warn(
+            "store.backend",
+            "memory keeps scan reports in one pod and loses them on restart. "
+            "It is a development backend; use postgres for anything Harbor "
+            "polls.",
+        )
+
+    # Harbor's report polling has no total timeout - it restarts its own timer
+    # on every 302 - so the adapter's scan job TTL is the effective deadline on
+    # a queued job. A TTL under the index deadline turns a slow-but-successful
+    # scan into a 404.
+    ttl = parse_duration(
+        effective(values, "store.scanJobTTL", "SCANNER_STORE_SCAN_JOB_TTL", "1h")
+    )
+    index_timeout = parse_duration(
+        effective(values, "clair.indexTimeout", "SCANNER_CLAIR_INDEX_TIMEOUT", "10m")
+    )
+    if ttl is not None and index_timeout is not None and ttl <= index_timeout:
+        warn(
+            "store.scanJobTTL",
+            "is not longer than clair.indexTimeout, so a scan that indexes for "
+            "its full deadline expires before Harbor can collect the report.",
         )
 
     return findings

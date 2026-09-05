@@ -10,21 +10,43 @@ Check that it answers:
   kubectl -n {{ include "harbor-scanner-clair.namespace" . }} run scanner-probe --rm -it --restart=Never --image=curlimages/curl -- \
     curl -sS{{ if include "harbor-scanner-clair.tls.enabled" . }} -k{{ end }} {{ ternary "https" "http" (ne (include "harbor-scanner-clair.tls.enabled" .) "") }}://{{ include "harbor-scanner-clair.fullname" . }}.{{ include "harbor-scanner-clair.namespace" . }}.svc:{{ .Values.service.port }}/api/v1/metadata
 
-This chart does not deploy Clair. The adapter posts image layers to the Clair
-2.x API at {{ .Values.clair.url }} and polls it for results, so nothing works
-until that endpoint is reachable from this namespace.
+This chart does not deploy Clair. The adapter submits the image manifest to the
+Clair 4.x indexer at {{ .Values.clair.url }} and reads the vulnerability report
+back, so nothing works until that endpoint is reachable from this namespace.
 
-NOTE: /probe/ready returns 200 unconditionally. It verifies neither Redis nor
-Clair, so a Ready pod is not evidence that either is reachable.
-{{- if and (not .Values.redis.existingSecret) (regexMatch "^rediss?(\\+sentinel)?://[^/@]*:[^/@]+@" .Values.redis.url) }}
+Clair pulls the layer blobs itself, directly from Harbor's registry, using the
+per-layer URLs and the token the adapter hands it. Clair's own namespace
+therefore needs a network route to that registry; the adapter's does not.
 
-WARNING: redis.url embeds a password, which is now visible in the pod spec to
-anyone who can read Pods in this namespace. Move the URL into a Secret and set
-redis.existingSecret instead.
+NOTE: until Clair's first updater cycle finishes, its matcher answers 202 with
+an empty body and every scan stays pending. That is Clair populating its
+vulnerability data, not an adapter fault; watch Clair's logs.
+
+NOTE: /probe/ready pings the job store and asks Clair's matcher whether it holds
+any vulnerability data, so a pod stays unready while either is missing.
+{{- if eq .Values.store.backend "postgres" }}
+
+The adapter creates its own `scan_job` table in the database the connection
+string names, with CREATE TABLE IF NOT EXISTS on every start. That database is
+the adapter's, not Clair's: point the DSN at a separate one on the same server
+and give its role the right to create the table, or the pod exits at startup.
 {{- end }}
-{{- if and .Values.clair.databaseUrl (not .Values.clair.existingSecret) }}
+{{- if and .Values.postgres.url (not .Values.postgres.existingSecret) (eq .Values.store.backend "postgres") }}
 
-NOTE: clair.databaseUrl was inlined into values and is stored in the
-chart-managed Secret {{ include "harbor-scanner-clair.fullname" . }}. It is a PostgreSQL DSN carrying a
-password; for GitOps, put it in your own Secret and set clair.existingSecret.
+NOTE: postgres.url was inlined into values and is stored in the chart-managed
+Secret {{ include "harbor-scanner-clair.fullname" . }}. It never reaches the pod
+spec, but it is still in the release; for GitOps, put the connection string in
+your own Secret and set postgres.existingSecret.
+{{- end }}
+{{- if and .Values.clair.psk (not .Values.clair.existingSecret) }}
+
+NOTE: clair.psk was inlined into values and is stored in the chart-managed
+Secret {{ include "harbor-scanner-clair.fullname" . }}. It is the key that authenticates every call to
+Clair; for GitOps, put it in your own Secret and set clair.existingSecret.
+{{- end }}
+{{- if and (not (include "harbor-scanner-clair.clair.pskSecretName" .)) (not (regexMatch "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:|/|$)" .Values.clair.url)) }}
+
+NOTE: no pre-shared key is configured, so the adapter calls Clair without an
+Authorization header. A Clair with an `auth` stanza answers 401 to every one of
+them. Set clair.psk, or clair.existingSecret.
 {{- end }}

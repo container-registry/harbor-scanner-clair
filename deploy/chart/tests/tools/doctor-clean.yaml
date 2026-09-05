@@ -1,10 +1,10 @@
 ---
 # A values file the doctor must stay silent about.
-redis:
-  existingSecret: harbor-scanner-clair-redis
+postgres:
+  existingSecret: harbor-scanner-clair-postgres
 clair:
   url: https://clair.clair.svc:6060
-  existingSecret: harbor-scanner-clair-database
+  existingSecret: harbor-scanner-clair-psk
 api:
   tls:
     enabled: true
