@@ -3,15 +3,18 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
-	log "github.com/sirupsen/logrus"
 )
 
 const (
 	HeaderContentType = "Content-Type"
+	// HeaderRefreshAfter is the report poll hint. Harbor parses it with
+	// ParseInt(v, 10, 8), so the value MUST be <= 127.
+	HeaderRefreshAfter = "Refresh-After"
 )
 
 var (
@@ -57,7 +60,7 @@ func (h *BaseHandler) WriteJSON(res http.ResponseWriter, data interface{}, mimeT
 
 	err := json.NewEncoder(res).Encode(data)
 	if err != nil {
-		log.WithError(err).Error("Error while writing JSON")
+		slog.Error("Error while writing JSON", slog.String("err", err.Error()))
 		h.SendInternalServerError(res)
 		return
 	}
