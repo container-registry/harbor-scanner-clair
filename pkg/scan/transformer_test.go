@@ -1,4 +1,4 @@
-package scanner
+package scan
 
 import (
 	"testing"
@@ -154,7 +154,7 @@ func TestTransformer_ToHarborScanReport(t *testing.T) {
 			},
 		},
 	}
-	scanReport := transformer.ToHarborScanReport(artifact, source)
+	scanReport := transformer.ToHarborScanReport(testScanner(), artifact, source)
 	assert.Equal(t, harbor.ScanReport{
 		GeneratedAt: fixedTime,
 		Artifact: harbor.Artifact{

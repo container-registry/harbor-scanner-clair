@@ -3,23 +3,14 @@ package clair
 import (
 	"bytes"
 	"crypto/tls"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
-	_ "github.com/lib/pq"
-	"github.com/xo/dburl"
-)
-
-const (
-	updaterLast = "updater/last"
 )
 
 // Client communicates with clair endpoint to scan image and get detailed scan result
@@ -30,27 +21,13 @@ type Client interface {
 }
 
 type client struct {
-	db          *sql.DB
 	endpointURL string
-	// need to customize the logger to write output to job log.
-	client *http.Client
+	client      *http.Client
 }
 
 // NewClient constructs a new client for Clair REST API pointing to the specified endpoint URL.
 func NewClient(tlsConfig etc.TLSConfig, cfg etc.ClairConfig) (Client, error) {
-	var db *sql.DB
-	if cfg.DatabaseURL != "" {
-		// GetVulnerabilityDatabaseUpdatedAt feature enabled when Clair database url is not empty,
-		// error will be returned when connect Clair database failed.
-		var err error
-		db, err = dburl.Open(cfg.DatabaseURL)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	return &client{
-		db:          db,
 		endpointURL: strings.TrimSuffix(cfg.URL, "/"),
 		client: &http.Client{Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -102,41 +79,11 @@ func (c *client) GetLayer(layerName string) (*LayerEnvelope, error) {
 }
 
 func (c *client) GetVulnerabilityDatabaseUpdatedAt() (*time.Time, error) {
-	if c.db == nil {
-		// feature not enabled
-		return nil, nil
-	}
-
-	rows, err := c.db.Query("SELECT value from keyvalue where key = $1", updaterLast)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	values := make([]string, 0)
-	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
-			log.Fatal(err)
-		}
-		values = append(values, value)
-	}
-
-	if len(values) == 0 {
-		// updater not finished
-		return nil, nil
-	} else if len(values) > 1 {
-		return nil, fmt.Errorf("multiple entries for %s in Clair DB", updaterLast)
-	}
-
-	overallLastUpdate, err := strconv.ParseInt(values[0], 0, 64)
-	if err != nil {
-		return nil, err
-	}
-
-	updateAt := time.Unix(overallLastUpdate, 0)
-
-	return &updateAt, nil
+	// The timestamp used to come from a direct SELECT against Clair's Postgres
+	// keyvalue table, which is why the adapter carried a database driver and a
+	// DSN. That connection is gone; a nil time simply omits the metadata
+	// property until the value is read over HTTP instead.
+	return nil, nil
 }
 
 func (c *client) send(req *http.Request, expectedStatus int) ([]byte, error) {
