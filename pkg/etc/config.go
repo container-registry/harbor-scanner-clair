@@ -13,8 +13,6 @@ import (
 
 	"github.com/caarlos0/env/v6"
 	"github.com/jackc/pgx/v5"
-
-	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 )
 
 // Recognized values for SCANNER_STORE_BACKEND, in their canonical (normalized)
@@ -57,9 +55,15 @@ type APIConfig struct {
 	Addr           string        `env:"SCANNER_API_SERVER_ADDR" envDefault:":8080"`
 	TLSCertificate string        `env:"SCANNER_API_SERVER_TLS_CERTIFICATE"`
 	TLSKey         string        `env:"SCANNER_API_SERVER_TLS_KEY"`
+	ClientCAs      []string      `env:"SCANNER_API_SERVER_CLIENT_CAS"`
 	ReadTimeout    time.Duration `env:"SCANNER_API_SERVER_READ_TIMEOUT" envDefault:"15s"`
 	WriteTimeout   time.Duration `env:"SCANNER_API_SERVER_WRITE_TIMEOUT" envDefault:"15s"`
 	IdleTimeout    time.Duration `env:"SCANNER_API_SERVER_IDLE_TIMEOUT" envDefault:"60s"`
+	MetricsEnabled bool          `env:"SCANNER_API_SERVER_METRICS_ENABLED" envDefault:"true"`
+	// APIKey arms the X-ScannerAdapter-API-Key check on /api/v1. Empty means the
+	// middleware is not mounted at all; the probes and /metrics are never behind
+	// it, because an orchestrator and a Prometheus scrape cannot send it.
+	APIKey string `env:"SCANNER_API_AUTH_API_KEY"`
 }
 
 func (c *APIConfig) IsTLSEnabled() bool {
@@ -208,6 +212,10 @@ func (c Config) validate() error {
 		return fmt.Errorf("SCANNER_API_SERVER_TLS_CERTIFICATE and SCANNER_API_SERVER_TLS_KEY must be set together " +
 			"(only one is set; the server would silently start without TLS)")
 	}
+	if len(c.API.ClientCAs) > 0 && !c.API.IsTLSEnabled() {
+		return fmt.Errorf("SCANNER_API_SERVER_CLIENT_CAS requires TLS " +
+			"(SCANNER_API_SERVER_TLS_CERTIFICATE and SCANNER_API_SERVER_TLS_KEY); client certificates are never verified without it)")
+	}
 	// A non-positive server timeout means "no timeout" to net/http, so a typo
 	// silently removes the slow-client protection instead of tightening it.
 	for name, d := range map[string]time.Duration{
@@ -252,12 +260,4 @@ func (c Config) validate() error {
 		return fmt.Errorf("SCANNER_STORE_SCAN_JOB_TTL must be positive, got %s", c.Store.ScanJobTTL)
 	}
 	return nil
-}
-
-func GetScannerMetadata() harbor.Scanner {
-	return harbor.Scanner{
-		Name:    "Clair",
-		Vendor:  "CoreOS",
-		Version: "2.x",
-	}
 }

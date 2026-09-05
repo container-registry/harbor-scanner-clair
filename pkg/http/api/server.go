@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
@@ -16,7 +19,7 @@ type Server struct {
 	server *http.Server
 }
 
-func NewServer(config etc.APIConfig, handler http.Handler) *Server {
+func NewServer(config etc.APIConfig, handler http.Handler) (*Server, error) {
 	server := &Server{
 		config: config,
 		server: &http.Server{
@@ -47,9 +50,28 @@ func NewServer(config etc.APIConfig, handler http.Handler) *Server {
 				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 			},
 		}
+
+		if len(config.ClientCAs) > 0 {
+			certPool := x509.NewCertPool()
+			for _, clientCAPath := range config.ClientCAs {
+				clientCA, err := os.ReadFile(clientCAPath)
+				if err != nil {
+					return nil, fmt.Errorf("could not read file %s: %w", clientCAPath, err)
+				}
+				// AppendCertsFromPEM reports whether it added anything. Ignoring
+				// it left an empty pool with RequireAndVerifyClientCert, which
+				// rejects every client certificate -- a total outage presenting
+				// as a per-client TLS error.
+				if !certPool.AppendCertsFromPEM(clientCA) {
+					return nil, fmt.Errorf("client CA file %s contains no usable certificate", clientCAPath)
+				}
+			}
+			server.server.TLSConfig.ClientCAs = certPool
+			server.server.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
 	}
 
-	return server
+	return server, nil
 }
 
 // ListenAndServe serves in a goroutine and reports how listening ended on the

@@ -74,10 +74,11 @@ func TestGetConfig(t *testing.T) {
 			envs: Envs{"SCANNER_STORE_POSTGRES_URL": testDSN},
 			expectedConfig: Config{
 				API: APIConfig{
-					Addr:         ":8080",
-					ReadTimeout:  parseDuration(t, "15s"),
-					WriteTimeout: parseDuration(t, "15s"),
-					IdleTimeout:  parseDuration(t, "60s"),
+					Addr:           ":8080",
+					ReadTimeout:    parseDuration(t, "15s"),
+					WriteTimeout:   parseDuration(t, "15s"),
+					IdleTimeout:    parseDuration(t, "60s"),
+					MetricsEnabled: true,
 				},
 				Clair: ClairConfig{
 					URL: "http://harbor-harbor-clair:6060",
@@ -104,6 +105,9 @@ func TestGetConfig(t *testing.T) {
 				"SCANNER_API_SERVER_READ_TIMEOUT":    "1h17m",
 				"SCANNER_API_SERVER_WRITE_TIMEOUT":   "2h5m",
 				"SCANNER_API_SERVER_IDLE_TIMEOUT":    "3m15s",
+				"SCANNER_API_SERVER_CLIENT_CAS":      "test/data/ca.crt",
+				"SCANNER_API_SERVER_METRICS_ENABLED": "false",
+				"SCANNER_API_AUTH_API_KEY":           "s3cret",
 
 				"SCANNER_TLS_INSECURE_SKIP_VERIFY": "true",
 				"SCANNER_TLS_CLIENTCAS":            "test/data/ca.crt",
@@ -122,9 +126,12 @@ func TestGetConfig(t *testing.T) {
 					Addr:           ":7654",
 					TLSCertificate: "/certs/tls.crt",
 					TLSKey:         "/certs/tls.key",
+					ClientCAs:      []string{"test/data/ca.crt"},
 					ReadTimeout:    parseDuration(t, "1h17m"),
 					WriteTimeout:   parseDuration(t, "2h5m"),
 					IdleTimeout:    parseDuration(t, "3m15s"),
+					MetricsEnabled: false,
+					APIKey:         "s3cret",
 				},
 				Clair: ClairConfig{
 					URL: "https://demo.clair:7080",
@@ -265,6 +272,16 @@ func TestPartialTLSIsRejected(t *testing.T) {
 			assert.Contains(t, err.Error(), "must be set together")
 		})
 	}
+}
+
+// TestClientCAsWithoutTLSAreRejected: inbound client certificates are only ever
+// verified on the TLS branch, so a client CA bundle without a server
+// certificate is a security control that silently does nothing.
+func TestClientCAsWithoutTLSAreRejected(t *testing.T) {
+	setenvs(t, Envs{"SCANNER_API_SERVER_CLIENT_CAS": "test/data/ca.crt"})
+	_, err := GetConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SCANNER_API_SERVER_CLIENT_CAS requires TLS")
 }
 
 // TestNonPositiveServerTimeoutsAreRejected: net/http reads a zero timeout as
