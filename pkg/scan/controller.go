@@ -146,7 +146,7 @@ func (c *controller) scan(ctx context.Context, jobID string, req harbor.ScanRequ
 		return fmt.Errorf("getting vulnerability report: %w", err)
 	}
 
-	report := c.transformer.ToHarborScanReport(c.scanner, req.Artifact, vulnerabilityReport)
+	report := c.transformer.Transform(req.Artifact, c.scanner, vulnerabilityReport)
 	raw, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("marshaling report envelope: %w", err)
