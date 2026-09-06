@@ -8,7 +8,7 @@ own:
 
 - **the image**, by digest (`image.digest`), not by a floating tag
 - **the chart**, by exact `version` in the HelmRelease
-- **every secret**, in a Secret you create (`redis.existingSecret`,
+- **every secret**, in a Secret you create (`postgres.existingSecret`,
   `clair.existingSecret`, `api.tls.existingSecret`)
 
 CI enforces the first half of that: it renders `ci/gitops-values.yaml` twice and

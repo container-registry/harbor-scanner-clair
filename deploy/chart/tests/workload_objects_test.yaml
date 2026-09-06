@@ -156,17 +156,37 @@ tests:
           path: spec.endpoints[0].scheme
           value: https
 
-  - it: needs no metrics toggle, because the adapter always serves /metrics
+  - it: serves metrics by default and takes them away on request
     templates:
       - deployment.yaml
     asserts:
-      # promhttp.Handler() is mounted unconditionally in
-      # pkg/http/api/v1/handler.go, so there is no env var to emit.
-      - notContains:
+      - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: SCANNER_API_SERVER_METRICS_ENABLED
-          any: true
+            value: "true"
+
+  - it: turns the metrics endpoint off
+    templates:
+      - deployment.yaml
+    set:
+      metrics.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_API_SERVER_METRICS_ENABLED
+            value: "false"
+
+  - it: refuses a ServiceMonitor scraping an adapter with metrics off
+    templates:
+      - validate-values.yaml
+    set:
+      metrics.enabled: false
+      metrics.serviceMonitor.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "metrics.serviceMonitor.enabled requires metrics.enabled: the adapter would serve no /metrics endpoint to scrape."
 
   - it: restricts ingress to the configured peers
     templates:

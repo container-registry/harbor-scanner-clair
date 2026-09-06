@@ -1,6 +1,16 @@
 ---
-# Evaluation-grade PostgreSQL for Clair. NOT for production: a single replica,
-# an emptyDir, and a password in a manifest. Swap it for your own database.
+# Evaluation-grade PostgreSQL for Clair. NOT for production: a single replica
+# and a password in a manifest. Swap it for your own database.
+#
+# A StatefulSet with a real volume rather than a Deployment with an emptyDir,
+# because losing this database now costs a full updater cycle: Clair refetches
+# every feed from scratch, which is minutes of wall time and a large memory
+# spike, not the few seconds a restart used to cost.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clair
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -11,6 +21,26 @@ stringData:
   POSTGRES_USER: clair
   POSTGRES_PASSWORD: REPLACE_ME
   POSTGRES_DB: clair
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clair-postgres-init
+  namespace: clair
+data:
+  # Files in /docker-entrypoint-initdb.d run once, on an empty data directory,
+  # against POSTGRES_DB - which is Clair's own database.
+  #
+  # Clair's migrations call uuid_generate_v4(), so the extension has to exist
+  # before Clair first connects.
+  10-uuid-ossp.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+  # The adapter's scan_job table lives on the same server in a database of its
+  # own, so Clair's migrations and the adapter's startup DDL never meet. The
+  # adapter creates the table itself on first start; POSTGRES_USER owns this
+  # database and can, which is why the DSN in the README names that role.
+  20-scanner-db.sql: |
+    CREATE DATABASE scanner;
 ---
 apiVersion: v1
 kind: Service
@@ -26,11 +56,12 @@ spec:
       targetPort: 5432
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: clair-postgres
   namespace: clair
 spec:
+  serviceName: clair-postgres
   replicas: 1
   selector:
     matchLabels:
@@ -41,8 +72,9 @@ spec:
         app: clair-postgres
     spec:
       containers:
+        # 15 is what Clair's own local-dev compose pins.
         - name: postgres
-          image: postgres:13-alpine
+          image: postgres:15
           envFrom:
             - secretRef:
                 name: clair-postgres
@@ -56,8 +88,19 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
       volumes:
-        # Evaluation only. Every restart loses the vulnerability database and
-        # Clair spends the next several minutes refetching it.
-        - name: data
-          emptyDir: {}
+        - name: init
+          configMap:
+            name: clair-postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi

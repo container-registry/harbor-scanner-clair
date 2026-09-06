@@ -1,10 +1,15 @@
 ---
 # Adapter next to a goharbor/harbor-helm release in the same namespace.
-redis:
-  # Database 5: Harbor's own components occupy 0-4.
-  url: redis://harbor-redis:6379/5
+#
+# The adapter stores its scan jobs in PostgreSQL, in the `scanner` database on
+# Clair's own instance rather than in any Harbor datastore. Create the Secret
+# first, see ../external-clair/README.md.
+postgres:
+  existingSecret: harbor-scanner-clair-postgres
+  existingSecretKey: url
 
-# Harbor ships no Clair. This is a server you operate; see
-# ../external-clair/ for reference manifests.
+# Harbor ships no Clair. This is a Clair 4.x server you operate; see
+# ../external-clair/ for reference manifests. Clair pulls the layer blobs
+# itself, so it needs a route to Harbor's registry as well.
 clair:
   url: http://clair.clair.svc:6060

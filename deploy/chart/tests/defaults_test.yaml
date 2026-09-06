@@ -104,15 +104,15 @@ tests:
       - exists:
           path: spec.template.metadata.annotations["checksum/config"]
 
-  - it: changes the config checksum when the inlined Clair DSN changes
+  - it: changes the config checksum when the inlined pre-shared key changes
     set:
-      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+      clair.psk: c2VjcmV0
     asserts:
       - notEqual:
           path: spec.template.metadata.annotations["checksum/config"]
           # The default render's checksum. Regenerate with:
           #   helm template t deploy/chart | grep checksum/config
-          value: 9a83c77dfe1478e31da59c875be52fe26b871eefc001c3ec0a2232c62f22e581
+          value: 8defc0423a7864e51f106794586243806fa9e3c52515a7571f5923a149e85797
 
   - it: emits exactly the adapter's environment and nothing from another adapter
     asserts:
@@ -132,26 +132,27 @@ tests:
               value: "15s"
             - name: SCANNER_API_SERVER_IDLE_TIMEOUT
               value: "60s"
+            - name: SCANNER_API_SERVER_METRICS_ENABLED
+              value: "true"
             - name: SCANNER_CLAIR_URL
-              value: "http://harbor-harbor-clair:6060"
-            - name: SCANNER_STORE_REDIS_URL
-              value: "redis://harbor-harbor-redis:6379"
-            - name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
-              value: "5"
-            - name: SCANNER_STORE_REDIS_POOL_MAX_IDLE
-              value: "5"
-            - name: SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT
-              value: "5m"
-            - name: SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT
-              value: "1s"
-            - name: SCANNER_STORE_REDIS_POOL_READ_TIMEOUT
-              value: "1s"
-            - name: SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT
-              value: "1s"
-            - name: SCANNER_STORE_REDIS_NAMESPACE
-              value: "harbor.scanner.clair:store"
-            - name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+              value: "http://clair:6060"
+            - name: SCANNER_CLAIR_JWT_ISSUER
+              value: "harbor-scanner-clair"
+            - name: SCANNER_CLAIR_INDEX_TIMEOUT
+              value: "10m"
+            - name: SCANNER_CLAIR_REQUEST_TIMEOUT
+              value: "30s"
+            - name: SCANNER_STORE_BACKEND
+              value: "postgres"
+            - name: SCANNER_STORE_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: t-harbor-scanner-clair
+                  key: url
+            - name: SCANNER_STORE_SCAN_JOB_TTL
               value: "1h"
+            - name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+              value: "1"
             - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
               value: "false"
 
@@ -170,7 +171,7 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_CLAIR_DATABASE_URL
+            name: SCANNER_CLAIR_PSK
           any: true
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -179,13 +180,41 @@ tests:
           any: true
 
   - it: emits the scan job TTL unconditionally, unlike a derived one
-    # The adapter's own default is 1h (pkg/etc/config.go), so an unset value is
-    # not a "work it out yourself" signal and the chart does not treat it as one.
+    # The adapter derives its own default from the lock TTL, so an unset value
+    # would drift with the image; the chart states what it wants instead.
     set:
-      store.redisScanJobTTL: 24h
+      store.scanJobTTL: 24h
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+            name: SCANNER_STORE_SCAN_JOB_TTL
             value: "24h"
+
+  - it: emits the store backend unconditionally, memory included
+    set:
+      store.backend: memory
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_BACKEND
+            value: "memory"
+      # The DSN goes with it: on the memory backend there is no database, and a
+      # secretKeyRef to a Secret nobody created leaves the pod in
+      # CreateContainerConfigError rather than being ignored.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_STORE_POSTGRES_URL
+          any: true
+
+  - it: emits the worker concurrency unconditionally
+    set:
+      jobQueue.workerConcurrency: 4
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+            value: "4"

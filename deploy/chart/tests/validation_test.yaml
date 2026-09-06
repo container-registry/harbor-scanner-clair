@@ -35,7 +35,7 @@ tests:
       clair.url: ""
     asserts:
       - failedTemplate:
-          errorMessage: "clair.url must name the Clair 2.x API endpoint the adapter posts layers to; the chart does not deploy Clair."
+          errorMessage: "clair.url must name the Clair 4.x API endpoint the adapter indexes against; the chart does not deploy Clair."
 
   - it: refuses a Clair existingSecret with no key
     set:
@@ -43,30 +43,72 @@ tests:
       clair.existingSecretKey: ""
     asserts:
       - failedTemplate:
-          errorMessage: "clair.existingSecretKey must name the key holding the Clair database DSN in clair.existingSecret."
+          errorMessage: "clair.existingSecretKey must name the key holding the base64 pre-shared key in clair.existingSecret."
 
-  - it: refuses a Clair DSN that is both inlined and externally owned
+  - it: refuses a pre-shared key that is both inlined and externally owned
     set:
       clair.existingSecret: s
-      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+      clair.psk: c2VjcmV0
     asserts:
       - failedTemplate:
-          errorMessage: "Set either clair.existingSecret or clair.databaseUrl, not both."
+          errorMessage: "Set either clair.existingSecret or clair.psk, not both."
 
-  - it: refuses an empty Redis URL with no Secret to read it from
+  - it: refuses an empty issuer while a pre-shared key is set
     set:
-      redis.url: ""
+      clair.psk: c2VjcmV0
+      clair.jwtIssuer: ""
     asserts:
       - failedTemplate:
-          errorMessage: "Set redis.url, or redis.existingSecret to read the URL from a Secret."
+          errorMessage: "clair.jwtIssuer must not be empty when a pre-shared key is set: Clair validates the JWT `iss` claim against its auth.psk.iss allow-list, and an empty issuer matches nothing."
 
-  - it: refuses a Redis existingSecret with no key
+  - it: refuses a ServiceMonitor with no metrics endpoint to scrape
     set:
-      redis.existingSecret: s
-      redis.existingSecretKey: ""
+      metrics.enabled: false
+      metrics.serviceMonitor.enabled: true
     asserts:
       - failedTemplate:
-          errorMessage: "redis.existingSecretKey must name the key holding the Redis URL in redis.existingSecret."
+          errorMessage: "metrics.serviceMonitor.enabled requires metrics.enabled: the adapter would serve no /metrics endpoint to scrape."
+
+  - it: refuses the memory backend with more than one replica
+    set:
+      store.backend: memory
+      replicaCount: 3
+    asserts:
+      - failedTemplate:
+          errorMessage: "store.backend: memory keeps scan reports in one pod's memory, so a second replica answers Harbor's report poll with 404. Use the postgres backend, or pin replicaCount to 1 with autoscaling off."
+
+  - it: refuses the memory backend under an autoscaler
+    set:
+      store.backend: memory
+      autoscaling.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "store.backend: memory keeps scan reports in one pod's memory, so a second replica answers Harbor's report poll with 404. Use the postgres backend, or pin replicaCount to 1 with autoscaling off."
+
+  - it: refuses the postgres backend with no connection string to use
+    set:
+      postgres.url: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "store.backend: postgres needs a database: set postgres.url, or postgres.existingSecret to read the connection string from a Secret. This chart deploys no PostgreSQL; the adapter's table belongs in its own database on Clair's instance, which example/external-clair/ creates."
+
+  - it: accepts an empty postgres URL on the memory backend
+    # The memory backend opens no pool, so the guard above must not fire for a
+    # development install that deliberately has no database.
+    set:
+      postgres.url: ""
+      store.backend: memory
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: refuses a postgres existingSecret with no key
+    set:
+      postgres.existingSecret: s
+      postgres.existingSecretKey: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "postgres.existingSecretKey must name the key holding the connection string in postgres.existingSecret."
 
   - it: refuses a PDB with both minAvailable and maxUnavailable
     set:
@@ -112,15 +154,15 @@ tests:
   - it: refuses credentials smuggled into config through a URL
     set:
       config:
-        SCANNER_STORE_REDIS_URL: redis://user:s3cret@harbor-redis:6379
+        SCANNER_STORE_POSTGRES_URL: postgres://user:s3cret@clair-postgres:5432/scanner
     asserts:
       - failedTemplate:
-          errorMessage: "config.SCANNER_STORE_REDIS_URL embeds credentials in a URL, and config renders into a ConfigMap. Move it to `secret`, which takes the same notation."
+          errorMessage: "config.SCANNER_STORE_POSTGRES_URL embeds credentials in a URL, and config renders into a ConfigMap. Move it to `secret`, which takes the same notation."
 
   - it: accepts a credential-free URL in config
     set:
       config:
-        SCANNER_STORE_REDIS_URL: redis://harbor-redis:6379/2
+        SCANNER_STORE_POSTGRES_URL: postgres://clair-postgres:5432/scanner?sslmode=disable
     asserts:
       - hasDocuments:
           count: 0
@@ -165,11 +207,24 @@ tests:
     set:
       config:
         scanner:
-          clair:
-            database_url: postgres://u:p@h:5432/clair
+          store:
+            postgres:
+              url: postgres://u:p@h:5432/scanner
     asserts:
       - failedTemplate:
           errorPattern: "embeds credentials in a URL"
+
+  - it: refuses the pre-shared key in the ConfigMap passthrough
+    # The name-based guard has to know about PSK: SCANNER_CLAIR_PSK matches
+    # none of TOKEN, PASSWORD, SECRET, APIKEY or CREDENTIAL.
+    set:
+      config:
+        scanner:
+          clair:
+            psk: c2VjcmV0
+    asserts:
+      - failedTemplate:
+          errorPattern: "renders into a ConfigMap, which is not secret"
 
   - it: refuses config keys that flatten onto the same env var name
     set:

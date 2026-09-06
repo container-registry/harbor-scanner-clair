@@ -30,4 +30,4 @@ OpenShift runs the container with an arbitrary UID in the root group (GID 0),
 and the base image's `/home/scanner` tree is group-readable, so the binary
 starts. There is no persistent volume in this chart, which removes the usual
 `fsGroup` ownership problem entirely - the adapter keeps nothing on disk, the
-reports live in Redis and the vulnerability data in Clair.
+reports live in PostgreSQL and the vulnerability data in Clair.

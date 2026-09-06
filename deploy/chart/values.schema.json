@@ -382,8 +382,10 @@
     "metrics": {
       "type": "object",
       "additionalProperties": false,
-      "$comment": "No `enabled`: the adapter serves /metrics from promhttp.Handler() unconditionally (pkg/http/api/v1/handler.go), so there is nothing for the chart to switch.",
       "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
         "serviceMonitor": {
           "type": "object",
           "additionalProperties": false,
@@ -548,7 +550,8 @@
           "type": "string",
           "pattern": "^$|^https?://"
         },
-        "databaseUrl": {
+        "psk": {
+          "$comment": "No base64 pattern: a wrong-alphabet key is a runtime 401, and a regex here would reject a key Clair itself accepts.",
           "type": "string"
         },
         "existingSecret": {
@@ -556,6 +559,17 @@
         },
         "existingSecretKey": {
           "type": "string"
+        },
+        "jwtIssuer": {
+          "type": "string"
+        },
+        "indexTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+        },
+        "requestTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
         }
       }
     },
@@ -568,49 +582,20 @@
         }
       }
     },
-    "redis": {
+    "postgres": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "url": {
+          "$comment": "Empty is allowed here so templates/validate-values.yaml can answer with a sentence naming both ways to supply a DSN; the pattern still catches a URL for something that is not PostgreSQL.",
           "type": "string",
-          "pattern": "^$|^rediss?(\\+sentinel)?://"
+          "pattern": "^$|^postgres(ql)?://"
         },
         "existingSecret": {
           "type": "string"
         },
         "existingSecretKey": {
           "type": "string"
-        },
-        "pool": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "maxActive": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "maxIdle": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "idleTimeout": {
-              "type": "string",
-              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
-            },
-            "connectionTimeout": {
-              "type": "string",
-              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
-            },
-            "readTimeout": {
-              "type": "string",
-              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
-            },
-            "writeTimeout": {
-              "type": "string",
-              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
-            }
-          }
         }
       }
     },
@@ -618,14 +603,24 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "redisNamespace": {
+        "backend": {
           "type": "string",
-          "minLength": 1
+          "enum": ["postgres", "memory"]
         },
-        "redisScanJobTTL": {
-          "$comment": "Not nullable and not empty: the chart emits SCANNER_STORE_REDIS_SCAN_JOB_TTL unconditionally, and an empty value would reach time.ParseDuration and fail the adapter at startup.",
+        "scanJobTTL": {
+          "$comment": "Not nullable and not empty: the chart emits SCANNER_STORE_SCAN_JOB_TTL unconditionally, and an empty value would reach time.ParseDuration and fail the adapter at startup.",
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$"
+        }
+      }
+    },
+    "jobQueue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workerConcurrency": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

@@ -5,14 +5,14 @@
 image:
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
-redis:
-  existingSecret: harbor-scanner-clair-redis
+postgres:
+  existingSecret: harbor-scanner-clair-postgres
   existingSecretKey: url
 
 clair:
   url: http://clair.clair.svc:6060
-  existingSecret: harbor-scanner-clair-database
-  existingSecretKey: databaseUrl
+  existingSecret: harbor-scanner-clair-psk
+  existingSecretKey: psk
 
 api:
   tls:
@@ -28,8 +28,7 @@ serviceAccount:
 config:
   scanner:
     store:
-      redis:
-        scan_job_ttl: 2h
+      scan_job_ttl: 2h
 
 podSpecOverrides:
   runtimeClassName: gvisor

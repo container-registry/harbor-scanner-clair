@@ -23,8 +23,7 @@ tests:
           clair:
             url: http://clair:6060
           store:
-            redis:
-              scan_job_ttl: 2h
+            scan_job_ttl: 2h
           log:
             level: debug
         http_proxy: http://proxy:3128
@@ -38,7 +37,7 @@ tests:
           path: data.SCANNER_CLAIR_URL
           value: "http://clair:6060"
       - equal:
-          path: data.SCANNER_STORE_REDIS_SCAN_JOB_TTL
+          path: data.SCANNER_STORE_SCAN_JOB_TTL
           value: "2h"
       - equal:
           path: data.SCANNER_LOG_LEVEL
@@ -67,11 +66,14 @@ tests:
   - it: base64-encodes the secret variant and keeps it out of the pod spec
     templates:
       - secret-env.yaml
+    # Doubles as the executable documentation for SCANNER_API_AUTH_API_KEY,
+    # which the chart deliberately has no dedicated value for.
     set:
       secret:
         scanner:
-          clair:
-            database_url: postgres://clair:pw@db:5432/clair
+          api:
+            auth:
+              api_key: s3cr3t
     asserts:
       - isKind:
           of: Secret
@@ -79,8 +81,8 @@ tests:
           path: type
           value: Opaque
       - equal:
-          path: data.SCANNER_CLAIR_DATABASE_URL
-          value: cG9zdGdyZXM6Ly9jbGFpcjpwd0BkYjo1NDMyL2NsYWly
+          path: data.SCANNER_API_AUTH_API_KEY
+          value: czNjcjN0
 
   - it: wires both sources into envFrom
     templates:
@@ -146,13 +148,13 @@ tests:
       secret:
         scanner:
           store:
-            redis:
-              url: redis://:pw@r:6379
+            postgres:
+              url: postgres://u:pw@h:5432/scanner
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_STORE_REDIS_URL
+            name: SCANNER_STORE_POSTGRES_URL
           any: true
 
   - it: lets extraEnv win over the passthrough

@@ -20,18 +20,18 @@ commonAnnotations: {}
 # `tpl`, so they may reference `.Values` and `.Release`.
 extraManifests: []
 
-# -- Number of adapter replicas. The adapter holds no local state - the reports
-# live in Redis and the vulnerability data in Clair - so replicas buy
-# availability and scan throughput alike.
+# -- Number of adapter replicas. The adapter holds no local state: the reports
+# live in Postgres, and the vulnerability data and the layer fetching both live
+# in Clair. Replicas buy availability and scan throughput alike.
 replicaCount: 1
 # -- Deployment revision history retained for rollbacks.
 revisionHistoryLimit: 10
 # -- Deployment update strategy. Empty means the Kubernetes default
 # (`RollingUpdate`, 25% surge and unavailable).
 strategy: {}
-# -- Grace period for a terminating pod. In-flight scans are lost on shutdown
-# regardless (the worker pool does not drain), so this only bounds how long the
-# kubelet waits before SIGKILL.
+# -- Grace period for a terminating pod. On SIGTERM the worker stops taking new
+# jobs and waits up to 10 seconds for the in-flight ones, so anything above that
+# only bounds how long the kubelet waits before SIGKILL.
 terminationGracePeriodSeconds: 60
 
 image:
@@ -87,9 +87,10 @@ securityContext:
     drop:
       - ALL
 
-# -- Resource requests and limits. The adapter transforms JSON and waits on
-# Clair; the scanning itself, and the vulnerability database with it, live in
-# the Clair server. Raise memory for very large manifests, not for scan volume.
+# -- Resource requests and limits. The adapter never fetches a layer blob: it
+# builds a manifest, waits on one synchronous index call, and transforms a JSON
+# report. Memory scales with report size and `jobQueue.workerConcurrency`, not
+# with image size.
 resources:
   requests:
     cpu: 100m
@@ -99,8 +100,9 @@ resources:
 
 # -- Container probes, passed through verbatim. The chart fills in
 # `scheme: HTTPS` when `api.tls.enabled` is set and no scheme is given. Set a
-# probe to `null` to drop it. Note that the adapter answers `/probe/ready` with
-# a bare 200: it checks neither Redis nor Clair.
+# probe to `null` to drop it. `/probe/ready` is a real check: it pings Postgres
+# and asks Clair's matcher whether it holds any vulnerability data, so a pod
+# stays unready while either is missing. `/probe/healthy` is unconditional.
 probes:
   startup:
     httpGet:
@@ -197,10 +199,12 @@ autoscaling:
   behavior: {}
 
 metrics:
+  # -- Serve Prometheus metrics on `/metrics` of the API port
+  # (`SCANNER_API_SERVER_METRICS_ENABLED`).
+  enabled: true
   serviceMonitor:
     # -- Create a Prometheus Operator ServiceMonitor. Requires the
-    # `monitoring.coreos.com/v1` CRD. The adapter always serves `/metrics` on
-    # the API port; there is no switch to turn the endpoint itself off.
+    # `monitoring.coreos.com/v1` CRD and `metrics.enabled`.
     enabled: false
     # -- Namespace for the ServiceMonitor. Defaults to the release namespace.
     namespace: ""
@@ -227,16 +231,19 @@ networkPolicy:
   # -- Peers allowed to reach the API port. Empty allows any source; set this
   # to the Harbor core/jobservice selectors to lock the adapter down.
   ingress: []
-  # -- Restrict egress as well. Leave off unless you enumerate Redis, the
-  # registry, and the Clair server in `networkPolicy.egress`.
+  # -- Restrict egress as well. Leave off unless you enumerate Postgres, the
+  # Clair API and the registry in `networkPolicy.egress`. Clair pulls the blobs
+  # itself, so the adapter's own registry egress is manifest traffic only - but
+  # Clair's namespace then needs a policy that lets Clair reach the registry.
   egressEnabled: false
   # -- Egress rules, used when `networkPolicy.egressEnabled` is set.
   egress: []
 
 # -- Private CA certificates to trust, on top of the system bundle. The adapter
 # is a Go program, so this covers every outbound TLS call it makes: pulling
-# image manifests from a registry with an internal CA, a TLS Redis, an HTTPS
-# Clair endpoint.
+# image manifests from a registry with an internal CA, a Postgres reached with
+# `sslmode=verify-full`, an HTTPS Clair endpoint. It does not cover Clair's own
+# pulls from the registry; Clair's trust store is configured in Clair.
 #
 # Two mechanisms are set up together, deliberately. The bundle is mounted at
 # `/etc/scanner-clair/extra-ca` and `SSL_CERT_DIR=/etc/ssl/certs:/etc/scanner-clair/extra-ca`
@@ -306,20 +313,32 @@ api:
     key: ""
 
 clair:
-  # -- Base URL of the Clair 2.x API the adapter posts layers to. This chart
-  # does not deploy Clair; Harbor stopped bundling it in 2.2, so the server is
-  # yours to operate. See `example/external-clair/`.
-  url: http://harbor-harbor-clair:6060
-  # -- PostgreSQL DSN for Clair's own database. Used for exactly one query, the
-  # `updater/last` timestamp reported as the vulnerability database age in
-  # `/api/v1/metadata`. Scanning works without it. It carries a password, so
-  # prefer `existingSecret`.
-  databaseUrl: ""
-  # -- Existing Secret holding the PostgreSQL DSN. Mutually exclusive with
-  # `databaseUrl`, and keeps the password out of the pod spec.
+  # -- Base URL of the Clair 4.x API. The adapter POSTs a manifest to
+  # `/indexer/api/v1/index_report` and reads
+  # `/matcher/api/v1/vulnerability_report/{digest}` back. This chart does not
+  # deploy Clair; see `example/external-clair/`.
+  url: http://clair:6060
+  # -- Pre-shared key for Clair's JWT authentication, base64 as Clair's own
+  # `auth.psk.key` takes it. The adapter signs an HS256 token with the decoded
+  # bytes and sends it as `Authorization: Bearer`. Leave empty for a Clair with
+  # no `auth` stanza; a Clair that has one answers 401 without it. Prefer
+  # `existingSecret`.
+  psk: ""
+  # -- Existing Secret holding the base64 pre-shared key. Mutually exclusive
+  # with `psk`, and keeps the key out of the pod spec.
   existingSecret: ""
   # -- Key within `clair.existingSecret`.
-  existingSecretKey: databaseUrl
+  existingSecretKey: psk
+  # -- `iss` claim the adapter puts in its JWT. Clair rejects a token whose
+  # issuer is not in its `auth.psk.iss` list, so this must appear there.
+  jwtIssuer: harbor-scanner-clair
+  # -- Deadline for one `POST /indexer/api/v1/index_report`. Indexing is
+  # synchronous: Clair pulls every layer and scans it inside this one request,
+  # so this bounds the whole fetch-and-index phase, not a round trip.
+  indexTimeout: 10m
+  # -- Deadline for every other Clair call (vulnerability report, updater
+  # state).
+  requestTimeout: 30s
 
 tls:
   # -- Skip TLS verification on every outbound connection the adapter makes -
@@ -327,46 +346,53 @@ tls:
   # `extraCA` instead.
   insecureSkipVerify: false
 
-redis:
-  # -- Redis URL. Supports a standalone server
-  # (`redis://[:password@]host:port/db`) and Sentinel
-  # (`redis+sentinel://[:password@]host1:port1,host2:port2/monitor/db`).
-  # A password inlined here lands in the pod spec in clear text - use
-  # `existingSecret` instead.
-  url: redis://harbor-harbor-redis:6379
-  # -- Existing Secret holding the complete Redis URL. Wins over `url` and
-  # keeps the password out of the pod spec.
+# -- Where the adapter keeps its scan jobs and reports. This is Clair's own
+# PostgreSQL instance by default, in a **separate database** (`scanner`): the
+# adapter never touches Clair's own tables, and Clair's migrations never see
+# the adapter's. The chart deploys no database; `example/external-clair/`
+# creates both.
+postgres:
+  # -- Connection string, `postgres://user:password@host:5432/scanner?sslmode=...`.
+  # The chart always reads it through a Secret - a DSN set here is written to
+  # the chart-managed Secret rather than into the pod spec - but it still lands
+  # in the release, so prefer `existingSecret` outside a test install.
+  #
+  # The role in the DSN owns the adapter's table: the adapter runs
+  # `CREATE TABLE IF NOT EXISTS scan_job ...` at startup, so it needs create
+  # rights on the database, not only DML on an existing table.
+  url: postgres://clair@clair-postgres:5432/scanner?sslmode=disable
+  # -- Existing Secret holding the complete DSN. Wins over `url`, and keeps the
+  # password out of the release as well as out of the pod spec.
   existingSecret: ""
-  # -- Key within `redis.existingSecret`.
+  # -- Key within `postgres.existingSecret`.
   existingSecretKey: url
-  pool:
-    # -- Maximum connections allocated by the pool.
-    maxActive: 5
-    # -- Maximum idle connections kept in the pool.
-    maxIdle: 5
-    # -- Idle connection lifetime. `0` keeps idle connections open forever.
-    idleTimeout: 5m
-    # -- Connection timeout.
-    connectionTimeout: 1s
-    # -- Read timeout for a single command reply.
-    readTimeout: 1s
-    # -- Write timeout for a single command.
-    writeTimeout: 1s
 
 store:
-  # -- Key namespace for scan jobs and reports.
-  redisNamespace: harbor.scanner.clair:store
+  # -- Where scan jobs and reports live: `postgres` or `memory`. `memory` is for
+  # a single-replica development install only - nothing survives a restart and
+  # two replicas share no state, so Harbor polls a report the other pod holds.
+  # The chart refuses `memory` with more than one replica.
+  backend: postgres
   # -- TTL for persisted scan jobs and reports. A report is unreadable once it
-  # expires, so keep it comfortably above the time Harbor takes to collect one.
-  redisScanJobTTL: 1h
+  # expires, so keep it comfortably above the time Harbor takes to collect one,
+  # and above `clair.indexTimeout` plus the time a job spends queued.
+  scanJobTTL: 1h
+
+jobQueue:
+  # -- Workers per replica. Harbor's Scan All issues unbounded concurrent scan
+  # requests (its job `MaxCurrency()` is 0), so the adapter is the only thing
+  # rate-limiting Clair. Scale with `replicaCount` rather than this: Clair's
+  # indexer returns 429 above its own `index_report_request_concurrency`, and
+  # each in-flight scan holds a manifest and a report in adapter memory.
+  workerConcurrency: 1
 
 proxy:
   # -- HTTP proxy URL.
   httpProxy: ""
   # -- HTTPS proxy URL.
   httpsProxy: ""
-  # -- Comma-separated hosts the proxy settings do not apply to. Redis, Clair
-  # and the Harbor registry normally belong here.
+  # -- Comma-separated hosts the proxy settings do not apply to. Postgres, the
+  # Clair 4.x API and the Harbor registry normally belong here.
   noProxy: ""
 
 # -- Adapter configuration as a nested map, flattened into env vars in a
@@ -376,7 +402,7 @@ proxy:
 #     config:
 #       scanner:
 #         clair:
-#           url: http://clair:6060   ->   SCANNER_CLAIR_URL=http://clair:6060
+#           index_timeout: 20m   ->   SCANNER_CLAIR_INDEX_TIMEOUT=20m
 #
 # The adapter is configured entirely by environment, so this reaches every
 # setting it has - including ones added after this chart version, with no chart
@@ -384,7 +410,9 @@ proxy:
 # `envFrom` would otherwise lose to it.
 #
 # A ConfigMap is not secret. Credential-shaped keys are refused at render time;
-# put them in `secret` below.
+# put them in `secret` below - `secret.scanner.api.auth.api_key` is how the
+# optional `SCANNER_API_AUTH_API_KEY` is set, since the chart has no value for
+# it.
 config: {}
 # -- Same notation as `config`, rendered into a chart-managed Secret instead, so
 # the values never appear in the pod spec.
