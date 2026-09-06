@@ -1,10 +1,6 @@
 // Package scan orchestrates one scan job: fetch the artifact manifest from the
 // registry, hand the layers to Clair, and turn Clair's answer into the report
 // Harbor polls for.
-//
-// This controller is a transitional shape: it drives the Clair v4 client
-// through a local interface, and the registry client and error categories it
-// deserves arrive with the rest of the scan-path rewrite.
 package scan
 
 import (
@@ -13,15 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
+
+	"github.com/opencontainers/go-digest"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/container-registry/harbor-scanner-clair/pkg/job"
 	"github.com/container-registry/harbor-scanner-clair/pkg/metrics"
 	"github.com/container-registry/harbor-scanner-clair/pkg/persistence"
-	"github.com/docker/distribution"
+	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
 )
 
 // statusWriteTimeout bounds the terminal status/report writes. Those writes run
@@ -41,18 +38,10 @@ type clairClient interface {
 	VulnerabilityReport(ctx context.Context, manifestHash string) (*clair.VulnerabilityReport, error)
 }
 
-// Image config media types. Clair indexes filesystem layers, and the config
-// blob is neither a layer nor a tar, so it is skipped for both the Docker and
-// the OCI spelling.
-const (
-	mediaTypeDockerImageConfig = "application/vnd.docker.container.image.v1+json"
-	mediaTypeOCIImageConfig    = "application/vnd.oci.image.config.v1+json"
-)
-
 // registryClient fetches the artifact manifest with the authorization Harbor
 // minted for this scan.
 type registryClient interface {
-	GetManifest(req harbor.ScanRequest) (distribution.Manifest, error)
+	GetManifest(ctx context.Context, req harbor.ScanRequest) (*registry.Manifest, error)
 }
 
 type Controller interface {
@@ -111,51 +100,65 @@ func (c *controller) Scan(ctx context.Context, jobID string, req harbor.ScanRequ
 func (c *controller) scan(ctx context.Context, jobID string, req harbor.ScanRequest) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic during scan: %v", r)
+			err = &Error{Category: CategoryAdapter, Detail: "scanning the artifact", Cause: fmt.Errorf("panic: %v", r)}
 		}
 	}()
 
 	if err = c.store.UpdateStatus(ctx, jobID, job.Pending); err != nil {
-		return fmt.Errorf("updating scan job status: %w", err)
+		return fail("updating scan job status", err)
 	}
 
-	manifest, err := c.registry.GetManifest(req)
-	if err != nil {
-		return fmt.Errorf("getting manifest: %w", err)
-	}
-
-	clairManifest, err := toClairManifest(req, manifest)
-	if err != nil {
+	if err = validateDigest(req.Artifact.Digest); err != nil {
 		return err
 	}
+
+	manifest, err := c.registry.GetManifest(ctx, req)
+	if err != nil {
+		return fail("fetching the artifact manifest", err)
+	}
+	clairManifest := manifest.ClairManifest(req)
 
 	// Clair fetches every layer itself over the URIs and headers in the
 	// manifest, so this one call covers the whole artifact and blocks until the
 	// index is finished.
 	indexReport, err := c.clair.Index(ctx, clairManifest)
 	if err != nil {
-		return fmt.Errorf("indexing artifact: %w", err)
+		return fail("indexing the artifact", err)
+	}
+	// The client already rejects an unsuccessful 201. This second check covers
+	// every other status that yields a report body, so an unfinished index can
+	// never be read as a clean one and reported to Harbor as zero findings.
+	if indexReport.State != clair.StateIndexFinished || !indexReport.Success {
+		return &Error{
+			Category: CategoryClairIndex,
+			Detail:   "indexing the artifact",
+			Cause: fmt.Errorf("%w: state %q: %s",
+				clair.ErrIndexFailed, indexReport.State, indexReport.Err),
+		}
 	}
 	slog.Debug("Artifact indexed",
 		slog.String("scan_job_id", jobID),
 		slog.String("state", indexReport.State),
 		slog.Int("layers", len(clairManifest.Layers)))
 
-	vulnerabilityReport, err := c.clair.VulnerabilityReport(ctx, clairManifest.Hash)
+	// The request's digest, not the one Clair echoed back: they are the same
+	// value, and using this one keeps the two calls independent.
+	vulnerabilityReport, err := c.clair.VulnerabilityReport(ctx, req.Artifact.Digest)
 	if err != nil {
-		return fmt.Errorf("getting vulnerability report: %w", err)
+		return fail("getting the vulnerability report", err)
 	}
 
 	report := c.transformer.Transform(req.Artifact, c.scanner, vulnerabilityReport)
 	raw, err := json.Marshal(report)
 	if err != nil {
-		return fmt.Errorf("marshaling report envelope: %w", err)
+		return fail("marshaling the report envelope", err)
 	}
 
 	slog.Info("Scan finished",
 		slog.String("scan_job_id", jobID),
 		slog.String("repository", req.Artifact.Repository),
-		slog.String("digest", req.Artifact.Digest))
+		slog.String("digest", req.Artifact.Digest),
+		slog.Int("vulnerabilities", len(report.Vulnerabilities)))
 
 	// The terminal write runs detached from the job deadline: a scan that
 	// completed just under the deadline must still be recorded as Finished, not
@@ -163,43 +166,42 @@ func (c *controller) scan(ctx context.Context, jobID string, req harbor.ScanRequ
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
 	defer cancel()
 	if err = c.store.Finish(writeCtx, jobID, raw); err != nil {
-		return fmt.Errorf("saving scan report: %w", err)
+		return fail("saving the scan report", err)
 	}
 	return nil
 }
 
-// toClairManifest describes the artifact the way Clair's indexer wants it: the
-// artifact digest as the manifest hash, one entry per layer in manifest order,
-// and the pull token Harbor minted for this scan forwarded verbatim as the
-// header Clair fetches each blob with.
-func toClairManifest(req harbor.ScanRequest, manifest distribution.Manifest) (clair.Manifest, error) {
-	clairManifest := clair.Manifest{Hash: req.Artifact.Digest}
-	registryURL := strings.TrimRight(req.Registry.URL, "/")
-
-	for _, descriptor := range manifest.References() {
-		if descriptor.MediaType == mediaTypeDockerImageConfig || descriptor.MediaType == mediaTypeOCIImageConfig {
-			continue
+// validateDigest rejects an artifact digest Clair's schema would not accept.
+// The API handler validates the same thing on the way in; repeating it here
+// keeps the worker safe for any other producer, and the failure is categorized
+// as a manifest problem because the digest is how the manifest is addressed.
+func validateDigest(value string) error {
+	parsed, err := digest.Parse(value)
+	if err != nil {
+		return &Error{Category: CategoryManifest, Detail: "validating the artifact digest", Cause: err}
+	}
+	if parsed.Algorithm() != digest.SHA256 {
+		return &Error{
+			Category: CategoryManifest,
+			Detail:   "validating the artifact digest",
+			Cause: fmt.Errorf("digest %q is not sha256, which is the only algorithm clair accepts",
+				value),
 		}
-		clairManifest.Layers = append(clairManifest.Layers, clair.Layer{
-			Hash: descriptor.Digest.String(),
-			URI:  fmt.Sprintf("%s/v2/%s/blobs/%s", registryURL, req.Artifact.Repository, descriptor.Digest),
-			// Headers are map[string][]string on the wire. Only Authorization
-			// is sent: Clair follows the registry's redirect to storage itself,
-			// and Go drops the header on a cross-host hop, which is what makes
-			// a presigned URL work.
-			Headers: map[string][]string{"Authorization": {req.Registry.Authorization}},
-		})
 	}
-
-	if len(clairManifest.Layers) == 0 {
-		return clair.Manifest{}, fmt.Errorf("no scannable layers in artifact %s", req.Artifact.Digest)
-	}
-	return clairManifest, nil
+	return nil
 }
 
-// errorCategory maps a scan failure onto the metrics category label. A record
-// that expired while queued is a capacity signal and gets its own label rather
-// than being counted as an adapter fault.
+// fail attaches the category Harbor will render to a step failure. The stored
+// job error string is exactly what Harbor shows as the scan job's failure
+// detail, so the [category] prefix is what turns it into an actionable message.
+func fail(detail string, err error) error {
+	return &Error{Category: Categorize(err), Detail: detail, Cause: err}
+}
+
+// errorCategory maps a scan failure onto the metrics category label, which uses
+// the same vocabulary as the error prefix. A record that expired while queued is
+// a capacity signal and gets its own label rather than being counted as an
+// adapter fault.
 func errorCategory(err error) string {
 	switch {
 	case err == nil:
@@ -207,6 +209,6 @@ func errorCategory(err error) string {
 	case errors.Is(err, persistence.ErrJobNotFound):
 		return metrics.CategoryExpired
 	default:
-		return metrics.CategoryAdapter
+		return string(Categorize(err))
 	}
 }
