@@ -1,0 +1,356 @@
+{
+  "generated_at": "2026-09-05T12:00:00Z",
+  "artifact": {
+    "repository": "8gears/harbor-scanner-clair",
+    "digest": "sha256:90a4ffb96e4d60d7da32ee758c23ba398cf952715cb8e89bfddf6155dcd7daf6",
+    "mime_type": "application/vnd.docker.distribution.manifest.v2+json"
+  },
+  "scanner": {
+    "name": "Clair",
+    "vendor": "Project Quay",
+    "version": "4.9.0"
+  },
+  "severity": "Unknown",
+  "vulnerabilities": [
+    {
+      "id": "CVE-2026-14456",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-14456"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-14457",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-14457"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-18798",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-18798"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-54874",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-54874"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63072",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63072"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63073",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63073"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63074",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63074"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63075",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63075"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63076",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63076"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-75803",
+      "package": "libcrypto3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-75803"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-14456",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-14456"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-14457",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-14457"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-18798",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-18798"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-54874",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-54874"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63072",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63072"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63073",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63073"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63074",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63074"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63075",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63075"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-63076",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-63076"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    },
+    {
+      "id": "CVE-2026-75803",
+      "package": "libssl3",
+      "version": "3.5.7-r0",
+      "fix_version": "3.5.8-r0",
+      "severity": "Unknown",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2026-75803"
+      ],
+      "vendor_attributes": {
+        "clair": {
+          "distribution": "Alpine Linux v3.24",
+          "updater": "alpine-main-v3.24-updater"
+        }
+      }
+    }
+  ]
+}
