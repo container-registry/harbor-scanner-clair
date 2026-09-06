@@ -9,6 +9,7 @@
 #   task image                               # CI: multi-arch push, local: native push
 #   task image:local                         # single-arch local image (--load)
 #   task image:verify IMAGE_TAG=vX.Y.Z       # assert a pushed image has every platform
+#   task compose:up && task test:component   # component tier against a real Clair 4.x
 ---
 version: '3'
 
@@ -264,6 +265,29 @@ tasks:
     cmds:
       - task: test
 
+  test:component:
+    desc: "Run the component tier against the compose stack (requires task compose:up)"
+    cmd: go test -tags=component -count=1 -timeout=60m -v ./test/component/...
+
+  compose:up:
+    desc: "Start the component-tier stack: Clair 4.x, Postgres, a registry and the adapter"
+    vars:
+      COMPOSE_FILE: test/component/docker-compose.yml
+    cmds:
+      # The image is built from bin/linux-<arch>/, so the binary has to exist
+      # before docker reads the Dockerfile. Native arch only: the tier runs one
+      # adapter on the host's own architecture.
+      - task: build
+        vars: {PLATFORMS: 'linux/{{ARCH}}'}
+      - docker compose -f {{.COMPOSE_FILE}} up -d --wait --build
+      # Seeding is its own step because the seed container exits, and `up --wait`
+      # reads an exited container as a failed service.
+      - docker compose -f {{.COMPOSE_FILE}} run --rm seed
+
+  compose:down:
+    desc: "Stop the component-tier stack and delete its volumes"
+    cmd: docker compose -f test/component/docker-compose.yml down -v --remove-orphans
+
   # ============================================================================
   # Container Image
   # ============================================================================
@@ -382,14 +406,16 @@ tasks:
   # ============================================================================
 
   run:
-    desc: "Run the scanner locally with debug logging and the in-process store (needs a Clair at SCANNER_CLAIR_URL)"
+    desc: "Run the scanner locally with debug logging (requires a Clair 4.x at SCANNER_CLAIR_URL)"
     env:
       SCANNER_LOG_LEVEL: debug
       SCANNER_API_SERVER_ADDR: ':8080'
       SCANNER_CLAIR_URL: '{{.SCANNER_CLAIR_URL | default "http://localhost:6060"}}'
-      # The memory backend keeps `task run` free of a database. Nothing survives
-      # a restart, which is the trade local development makes.
-      SCANNER_STORE_BACKEND: memory
+      SCANNER_CLAIR_PSK: '{{.SCANNER_CLAIR_PSK | default ""}}'
+      # memory, so a bare `task run` needs no database. Pass
+      # SCANNER_STORE_BACKEND=postgres with a DSN to exercise the production path.
+      SCANNER_STORE_BACKEND: '{{.SCANNER_STORE_BACKEND | default "memory"}}'
+      SCANNER_STORE_POSTGRES_URL: '{{.SCANNER_STORE_POSTGRES_URL | default ""}}'
     cmds:
       - go run ./cmd/harbor-scanner-clair
 
@@ -439,4 +465,8 @@ tasks:
         echo "  Task (CI):      {{.TASK_VERSION}}"
         echo "  typos:          {{.TYPOS_VERSION}}"
         echo "  yamllint:       {{.YAMLLINT_VERSION}}"
+        echo ""
+        echo "Component tier backend (versions.env, compose and examples only):"
+        echo "  Clair:          {{.CLAIR_VERSION}}"
+        echo "  PostgreSQL:     {{.CLAIR_POSTGRES_VERSION}}"
         echo ""

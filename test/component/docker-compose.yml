@@ -1,0 +1,134 @@
+---
+# The component tier: a real Clair 4.x, a real registry, and the adapter built
+# from this repository's Dockerfile. Driven by `task test:component`; bring it up
+# and down with `task compose:up` and `task compose:down`.
+#
+# CLAIR_VERSION, CLAIR_POSTGRES_VERSION, ALPINE_BASE_IMAGE_VERSION and
+# LPROBE_VERSION come from versions.env, which the Taskfile loads as dotenv and
+# exports into every task environment. Running `docker compose` here by hand
+# without those variables set leaves the image tags empty.
+#
+# The adapter is a service rather than a host process because the blob URIs it
+# hands to Clair have to resolve on this network: Clair fetches every layer
+# itself from registry:5000, and the adapter fetches the manifest from the same
+# base URL, so both have to be inside the network that resolves "registry". The
+# test drives the adapter and the registry over their published ports.
+#
+# The adapter runs on the Postgres store, not the memory one, so the tier
+# exercises the real job store and queue: the scan_job table the adapter creates
+# at startup, the claim, and the terminal writes. Its database is "scanner" on
+# Clair's own Postgres instance, created by postgres/init.sql.
+#
+# Host ports are deliberately not the service ports. 5000 is taken by AirPlay on
+# macOS and 8080 by anything, and a component tier that cannot start next to a
+# developer's other containers gets run less often.
+name: harbor-scanner-clair-component
+
+services:
+  postgres:
+    image: postgres:${CLAIR_POSTGRES_VERSION}
+    environment:
+      POSTGRES_USER: clair
+      POSTGRES_PASSWORD: clair
+      POSTGRES_DB: clair
+    volumes:
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clair -d clair"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  clair:
+    image: quay.io/projectquay/clair:${CLAIR_VERSION}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CLAIR_MODE: combo
+      CLAIR_CONF: /clair/config.yaml
+      # Clair logs "memory limit unset" and lets the heap grow as far as it
+      # likes. The CVSS enricher peaked at 1805 MiB when measured that way,
+      # which is too close to a runner's headroom to leave unbounded.
+      GOMEMLIMIT: 1GiB
+    volumes:
+      - ./clair:/clair:ro
+    ports:
+      - "16060:6060"
+    healthcheck:
+      # The introspection listener, not the API: /readyz sits outside the PSK
+      # auth middleware so it answers without a token. It means "the process is
+      # serving", never "the vulnerability database is usable" - Clair logs "no
+      # health check configured; unconditionally reporting OK". The test waits
+      # for the matcher separately, with the zero-digest probe.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8089/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  registry:
+    image: registry:3
+    ports:
+      - "15000:5000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:5000/v2/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-shot, behind a profile so `up --wait` does not treat its exit as a
+  # failed service. `task compose:up` runs it explicitly once the registry is
+  # healthy. alpine 3.10 is end of life, so it reliably carries findings.
+  seed:
+    image: quay.io/skopeo/stable
+    profiles: ["seed"]
+    depends_on:
+      registry:
+        condition: service_healthy
+    entrypoint: ["skopeo"]
+    command:
+      - "copy"
+      # Pinned to the amd64 image on every host. Without the override the seeded
+      # digest, and with it the captured fixture, would depend on the
+      # architecture of whoever ran the tier.
+      - "--override-os=linux"
+      - "--override-arch=amd64"
+      - "--retry-times=3"
+      - "--dest-tls-verify=false"
+      - "docker://docker.io/library/alpine:3.10"
+      - "docker://registry:5000/library/alpine:3.10"
+
+  adapter:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        ALPINE_BASE_IMAGE_VERSION: ${ALPINE_BASE_IMAGE_VERSION}
+        LPROBE_VERSION: ${LPROBE_VERSION}
+    depends_on:
+      clair:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+    environment:
+      SCANNER_LOG_LEVEL: debug
+      # The same credentials the compose Postgres is started with. The role owns
+      # the scanner database, which is what the startup DDL needs.
+      SCANNER_STORE_BACKEND: postgres
+      SCANNER_STORE_POSTGRES_URL: postgres://clair:clair@postgres:5432/scanner?sslmode=disable
+      SCANNER_CLAIR_URL: http://clair:6060
+      SCANNER_CLAIR_PSK: "Q9CT6HPYgE8EW7ulY/MJfonJdMxSbrbKJVhY8GsVAzc="
+      SCANNER_CLAIR_JWT_ISSUER: harbor-scanner-clair
+    ports:
+      - "18080:8080"
+    healthcheck:
+      # Deliberately /probe/healthy and not the image's own /probe/ready: once
+      # readiness reaches through to Clair's matcher, a container that is
+      # serving correctly still answers 503 for the minutes the first
+      # vulnerability update takes, and `up --wait` would time out on it.
+      test: ["CMD", "/lprobe", "-port", "8080", "-endpoint", "/probe/healthy"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
