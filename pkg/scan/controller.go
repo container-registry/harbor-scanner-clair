@@ -2,9 +2,9 @@
 // registry, hand the layers to Clair, and turn Clair's answer into the report
 // Harbor polls for.
 //
-// This controller is a transitional shape. It still speaks the Clair v1 layer
-// API through the local clairClient interface; the seam is what the Clair v4
-// client is dropped into next.
+// This controller is a transitional shape: it drives the Clair v4 client
+// through a local interface, and the registry client and error categories it
+// deserves arrive with the rest of the scan-path rewrite.
 package scan
 
 import (
@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
@@ -36,9 +37,17 @@ const statusWriteTimeout = 10 * time.Second
 // interface so the client behind it can be replaced without touching the
 // orchestration.
 type clairClient interface {
-	ScanLayer(layer clair.Layer) error
-	GetLayer(layerName string) (*clair.LayerEnvelope, error)
+	Index(ctx context.Context, m clair.Manifest) (*clair.IndexReport, error)
+	VulnerabilityReport(ctx context.Context, manifestHash string) (*clair.VulnerabilityReport, error)
 }
+
+// Image config media types. Clair indexes filesystem layers, and the config
+// blob is neither a layer nor a tar, so it is skipped for both the Docker and
+// the OCI spelling.
+const (
+	mediaTypeDockerImageConfig = "application/vnd.docker.container.image.v1+json"
+	mediaTypeOCIImageConfig    = "application/vnd.oci.image.config.v1+json"
+)
 
 // registryClient fetches the artifact manifest with the authorization Harbor
 // minted for this scan.
@@ -115,30 +124,29 @@ func (c *controller) scan(ctx context.Context, jobID string, req harbor.ScanRequ
 		return fmt.Errorf("getting manifest: %w", err)
 	}
 
-	layers := c.transformer.ToClairLayers(req, manifest)
-	// An artifact whose manifest references no scannable layer would otherwise
-	// index the last element of an empty slice.
-	if len(layers) == 0 {
-		return fmt.Errorf("no scannable layers in artifact %s", req.Artifact.Digest)
-	}
-
-	for _, l := range layers {
-		slog.Debug("Sending layer for scanning",
-			slog.String("scan_job_id", jobID),
-			slog.String("layer_name", l.Name),
-			slog.String("layer_path", l.Path))
-		if err = c.clair.ScanLayer(l); err != nil {
-			return fmt.Errorf("scanning layer %s: %w", l.Name, err)
-		}
-	}
-
-	topLayer := layers[len(layers)-1].Name
-	envelope, err := c.clair.GetLayer(topLayer)
+	clairManifest, err := toClairManifest(req, manifest)
 	if err != nil {
-		return fmt.Errorf("getting layer %s: %w", topLayer, err)
+		return err
 	}
 
-	report := c.transformer.ToHarborScanReport(c.scanner, req.Artifact, envelope.Layer)
+	// Clair fetches every layer itself over the URIs and headers in the
+	// manifest, so this one call covers the whole artifact and blocks until the
+	// index is finished.
+	indexReport, err := c.clair.Index(ctx, clairManifest)
+	if err != nil {
+		return fmt.Errorf("indexing artifact: %w", err)
+	}
+	slog.Debug("Artifact indexed",
+		slog.String("scan_job_id", jobID),
+		slog.String("state", indexReport.State),
+		slog.Int("layers", len(clairManifest.Layers)))
+
+	vulnerabilityReport, err := c.clair.VulnerabilityReport(ctx, clairManifest.Hash)
+	if err != nil {
+		return fmt.Errorf("getting vulnerability report: %w", err)
+	}
+
+	report := c.transformer.ToHarborScanReport(c.scanner, req.Artifact, vulnerabilityReport)
 	raw, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("marshaling report envelope: %w", err)
@@ -158,6 +166,35 @@ func (c *controller) scan(ctx context.Context, jobID string, req harbor.ScanRequ
 		return fmt.Errorf("saving scan report: %w", err)
 	}
 	return nil
+}
+
+// toClairManifest describes the artifact the way Clair's indexer wants it: the
+// artifact digest as the manifest hash, one entry per layer in manifest order,
+// and the pull token Harbor minted for this scan forwarded verbatim as the
+// header Clair fetches each blob with.
+func toClairManifest(req harbor.ScanRequest, manifest distribution.Manifest) (clair.Manifest, error) {
+	clairManifest := clair.Manifest{Hash: req.Artifact.Digest}
+	registryURL := strings.TrimRight(req.Registry.URL, "/")
+
+	for _, descriptor := range manifest.References() {
+		if descriptor.MediaType == mediaTypeDockerImageConfig || descriptor.MediaType == mediaTypeOCIImageConfig {
+			continue
+		}
+		clairManifest.Layers = append(clairManifest.Layers, clair.Layer{
+			Hash: descriptor.Digest.String(),
+			URI:  fmt.Sprintf("%s/v2/%s/blobs/%s", registryURL, req.Artifact.Repository, descriptor.Digest),
+			// Headers are map[string][]string on the wire. Only Authorization
+			// is sent: Clair follows the registry's redirect to storage itself,
+			// and Go drops the header on a cross-host hop, which is what makes
+			// a presigned URL work.
+			Headers: map[string][]string{"Authorization": {req.Registry.Authorization}},
+		})
+	}
+
+	if len(clairManifest.Layers) == 0 {
+		return clair.Manifest{}, fmt.Errorf("no scannable layers in artifact %s", req.Artifact.Digest)
+	}
+	return clairManifest, nil
 }
 
 // errorCategory maps a scan failure onto the metrics category label. A record

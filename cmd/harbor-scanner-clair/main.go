@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -84,7 +85,14 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	// The error used to be swallowed by a format string that printed the nil
 	// client instead of the cause, so a misconfigured Clair endpoint failed
 	// with an unreadable message.
-	clairClient, err := clair.NewClient(config.TLS, config.Clair)
+	//
+	// Only the URL is configurable so far. The PSK, the issuer and the three
+	// timeouts arrive with the configuration rewrite; until then the client
+	// falls back to its own defaults and talks to an unauthenticated Clair.
+	clairClient, err := clair.NewClient(clair.Config{URL: config.Clair.URL}, &tls.Config{
+		RootCAs:            config.TLS.RootCAs,
+		InsecureSkipVerify: config.TLS.InsecureSkipVerify, //nolint:gosec // opt-in via SCANNER_TLS_INSECURE_SKIP_VERIFY
+	})
 	if err != nil {
 		return fmt.Errorf("constructing clair client: %w", err)
 	}
@@ -164,16 +172,13 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	// The vulnerability-database timestamp is injected rather than read from the
 	// Clair client inside the handler, so a Clair that cannot answer costs the
 	// metadata endpoint one property instead of a failed request.
-	vulnDBUpdatedAt := func(context.Context) (time.Time, bool) {
-		updatedAt, uErr := clairClient.GetVulnerabilityDatabaseUpdatedAt()
+	vulnDBUpdatedAt := func(ctx context.Context) (time.Time, bool) {
+		updatedAt, ok, uErr := clairClient.VulnDBUpdatedAt(ctx)
 		if uErr != nil {
 			slog.Warn("Failed to get vulnerability database updated time", slog.String("err", uErr.Error()))
 			return time.Time{}, false
 		}
-		if updatedAt == nil {
-			return time.Time{}, false
-		}
-		return *updatedAt, true
+		return updatedAt, ok
 	}
 
 	apiHandler := v1.NewAPIHandler(info, config, scanner, enqueuer, store, ready, vulnDBUpdatedAt)
