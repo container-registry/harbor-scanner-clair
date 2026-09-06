@@ -162,11 +162,7 @@ func TestTransformer_ToHarborScanReport(t *testing.T) {
 			Digest:     "sha256:70acd789bbbe58a2bbad70880e0ee1dc131846bd2f6c5f5ba459bad8a5b94815",
 			MimeType:   "application/vnd.docker.distribution.manifest.v2+json",
 		},
-		Scanner: harbor.Scanner{
-			Name:    "Clair",
-			Vendor:  "CoreOS",
-			Version: "2.x",
-		},
+		Scanner:  harbor.ClairScanner(),
 		Severity: harbor.SevCritical,
 		Vulnerabilities: []harbor.VulnerabilityItem{
 			{

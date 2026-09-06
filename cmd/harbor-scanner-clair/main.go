@@ -19,6 +19,7 @@ import (
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
+	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/container-registry/harbor-scanner-clair/pkg/http/api"
 	v1 "github.com/container-registry/harbor-scanner-clair/pkg/http/api/v1"
 	"github.com/container-registry/harbor-scanner-clair/pkg/metrics"
@@ -115,11 +116,12 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		store = memory.NewStore()
 	}
 
+	scanner := harbor.ClairScanner()
 	controller := scan.NewController(
 		store,
 		clairClient,
 		registry.NewClientFactory(config.TLS).Get(),
-		etc.GetScannerMetadata(),
+		scanner,
 	)
 
 	// The enqueuer and the worker are always built as a pair. A conditional
@@ -159,7 +161,26 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		return pgStore.Ping(pingCtx)
 	}
 
-	apiServer := api.NewServer(config.API, v1.NewAPIHandler(clairClient, enqueuer, store, ready))
+	// The vulnerability-database timestamp is injected rather than read from the
+	// Clair client inside the handler, so a Clair that cannot answer costs the
+	// metadata endpoint one property instead of a failed request.
+	vulnDBUpdatedAt := func(context.Context) (time.Time, bool) {
+		updatedAt, uErr := clairClient.GetVulnerabilityDatabaseUpdatedAt()
+		if uErr != nil {
+			slog.Warn("Failed to get vulnerability database updated time", slog.String("err", uErr.Error()))
+			return time.Time{}, false
+		}
+		if updatedAt == nil {
+			return time.Time{}, false
+		}
+		return *updatedAt, true
+	}
+
+	apiHandler := v1.NewAPIHandler(info, config, scanner, enqueuer, store, ready, vulnDBUpdatedAt)
+	apiServer, err := api.NewServer(config.API, apiHandler)
+	if err != nil {
+		return fmt.Errorf("constructing api server: %w", err)
+	}
 
 	worker.Start(ctx)
 
