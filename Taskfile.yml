@@ -227,15 +227,42 @@ tasks:
       CGO_ENABLED: "1"
     cmd: go test -short -race -coverprofile=coverage.txt -covermode=atomic ./...
 
-  test:integration:
-    desc: "Run integration tests (build tag: integration)"
-    cmd: go test -count=1 -tags=integration ./test/integration/...
+  test:postgres:
+    desc: "Run the Postgres store and queue tests against a throwaway container"
+    vars:
+      PG_CONTAINER: harbor-scanner-clair-test-postgres
+      # CLAIR_POSTGRES_VERSION comes from versions.env once the chart pins it;
+      # until then the default keeps this task self-contained.
+      PG_VERSION: '{{.CLAIR_POSTGRES_VERSION | default "15"}}'
+      PG_PORT: '{{.PG_PORT | default "15432"}}'
+    env:
+      # -race requires cgo; some CI runner images export CGO_ENABLED=0
+      CGO_ENABLED: "1"
+      SCANNER_TEST_POSTGRES_URL: 'postgres://scanner:scanner@localhost:{{.PG_PORT}}/scanner?sslmode=disable'
+    cmds:
+      # Removing the container on the way out as well as on the way in: a failed
+      # test run must not leave a listener on PG_PORT behind.
+      - defer: docker rm -f {{.PG_CONTAINER}} >/dev/null 2>&1 || true
+      - |
+        docker rm -f {{.PG_CONTAINER}} >/dev/null 2>&1 || true
+        docker run -d --rm --name {{.PG_CONTAINER}} \
+          -e POSTGRES_PASSWORD=scanner -e POSTGRES_USER=scanner -e POSTGRES_DB=scanner \
+          -p {{.PG_PORT}}:5432 postgres:{{.PG_VERSION}} >/dev/null
+        # `cmd && break` would abort the whole task under errexit the first time
+        # the container is not up yet, so the probe goes in an if.
+        for _ in $(seq 1 60); do
+          if docker exec {{.PG_CONTAINER}} pg_isready -U scanner -d scanner >/dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+        docker exec {{.PG_CONTAINER}} pg_isready -U scanner -d scanner
+      - go test -count=1 -race ./pkg/persistence/postgres/... ./pkg/queue/...
 
   test:all:
-    desc: "Run unit and integration tests"
+    desc: "Run every test tier that can run without external services"
     cmds:
       - task: test
-      - task: test:integration
 
   # ============================================================================
   # Container Image
@@ -355,12 +382,14 @@ tasks:
   # ============================================================================
 
   run:
-    desc: "Run the scanner locally with debug logging (requires redis, and a Clair 2.x at SCANNER_CLAIR_URL)"
+    desc: "Run the scanner locally with debug logging and the in-process store (needs a Clair at SCANNER_CLAIR_URL)"
     env:
       SCANNER_LOG_LEVEL: debug
       SCANNER_API_SERVER_ADDR: ':8080'
       SCANNER_CLAIR_URL: '{{.SCANNER_CLAIR_URL | default "http://localhost:6060"}}'
-      SCANNER_STORE_REDIS_URL: '{{.SCANNER_STORE_REDIS_URL | default "redis://localhost:6379"}}'
+      # The memory backend keeps `task run` free of a database. Nothing survives
+      # a restart, which is the trade local development makes.
+      SCANNER_STORE_BACKEND: memory
     cmds:
       - go run ./cmd/harbor-scanner-clair
 
