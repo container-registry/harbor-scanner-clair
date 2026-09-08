@@ -87,8 +87,8 @@ No preview is published for forked PRs and dependabot PRs (no OIDC token).
 For a native GitHub stack (`gh stack init`, the PRs carry a `1/N` badge) only
 the **top** PR publishes an image. Its head already contains every lower PR,
 so that one image is the whole stack; lower PRs would only produce prefixes of
-it. The image is tagged `pr-N` for the top PR and `stack-<n>` for the stack, and
-the comment on the top PR lists the PRs it contains.
+it. The top PR's `pr-N` is the stack image, and the comment on it lists the PRs
+it contains.
 
 The image-input allowlist is checked in a job, not in the trigger's `paths`
 filter: GitHub evaluates `paths` against the PR's own slice, so a chart-only or
