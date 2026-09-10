@@ -69,6 +69,33 @@ before the chart landed.
 
 Every push to `main` additionally publishes `8gears.container-registry.com/8gcr/harbor-scanner-clair:latest` via the `Main Image` workflow.
 
+## Pull Request Previews
+
+`pr-image.yml` and `pr-chart.yml` publish review artifacts to the dev project
+(`8gcr-dev`, `PR_REGISTRY_PROJECT`) and keep one sticky comment each on the
+PR with the reference, the digest and the cosign command.
+
+| Workflow | Inputs | Publishes |
+|----------|--------|-----------|
+| `pr-image.yml` | `cmd/`, `pkg/`, `go.mod`, `go.sum`, `Dockerfile`, `versions.env`, `Taskfile.yml`, the image workflows, `.github/actions/setup/` | `8gears.container-registry.com/8gcr-dev/harbor-scanner-clair:pr-N` |
+| `pr-chart.yml` | `deploy/chart/`, `pr-chart.yml`, `chart-annotate-images.sh` | `oci://8gears.container-registry.com/8gcr-dev/charts/harbor-scanner-clair:X.Y.Z-pr.N` |
+
+- A workflow publishes when the PR's diff against `main` touches one of its
+  inputs. The check is a job, not a `paths` trigger filter, so every PR gets a
+  status.
+- Stacked PRs (`gh stack`): only the top PR publishes, when the stack is
+  linked and on every push to the top; its diff against `main` is the whole
+  stack. A change to a lower PR reaches the preview after
+  `gh stack rebase && gh stack push`. PRs chained by hand are not a stack: the
+  bottom one is an ordinary PR, the ones above it match no trigger.
+- `pr-N` and `X.Y.Z-pr.N` are overwritten on every push. Pin the digest from
+  the comment.
+- The preview chart keeps the committed `appVersion`.
+  `--set image.repository=8gcr-dev/harbor-scanner-clair --set image.tag=pr-N`
+  pairs it with the PR's preview image.
+- No preview for forked PRs, dependabot PRs (no OIDC token) or release-please
+  PRs.
+
 ## Version Rules
 
 A release PR opens as soon as a line has at least one commit of a type that is
