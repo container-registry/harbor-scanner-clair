@@ -1,6 +1,11 @@
 harbor-scanner-clair
 Copyright 2019-2020 The Harbor Authors.
+Copyright 2025-2026 8gears.
 
 This product includes software developed by the Harbor project
 (https://goharbor.io) as goharbor/harbor-scanner-clair, licensed under the
 Apache License, Version 2.0. See LICENSE.
+
+Release 2.0.0 rewrote the adapter against the Clair v4 API. The attribution
+above is retained: the repository, its history and its license derive from the
+Harbor project.

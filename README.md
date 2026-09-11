@@ -4,135 +4,216 @@
 
 # Harbor Scanner Adapter for Clair
 
-The Harbor Scanner Adapter for [Clair][clair-url] is a service that translates the Harbor scanning API into Clair API calls
-and allows Harbor to use Clair for providing vulnerability reports on images stored in Harbor registry as part of its
-vulnerability scan feature.
+The Harbor Scanner Adapter for [Clair][clair-url] translates Harbor's scanner adapter API into
+calls against a **Clair v4** (Project Quay) indexer and matcher, so Harbor can use Clair for
+vulnerability reports on the images it stores.
 
-> See [Proposal: Pluggable Image Vulnerability Scanning][image-vulnerability-scanning-proposal] for more details.
+Clair v4 inverts the adapter model of Clair 2.x. Instead of pushing layer bytes, the adapter posts
+one manifest describing where the layers live and which header fetches them; Clair pulls the blobs
+itself, indexes them, and computes the vulnerability report on demand. **Clair therefore needs
+network access to the registry**, and the adapter never touches Clair's database.
+
+> See [Proposal: Pluggable Image Vulnerability Scanning][image-vulnerability-scanning-proposal] for
+> the Harbor side of the contract.
 
 ## TOC
 
-* [This fork](#this-fork)
+* [What changed in 2.0.0](#what-changed-in-200)
+* [Prerequisites](#prerequisites)
 * [Configuration](#configuration)
-* [Deploy to Kubernetes](#deploy-to-kubernetes)
+* [Deploy with Helm](#deploy-with-helm)
+* [Registering with Harbor](#registering-with-harbor)
+* [Troubleshooting](#troubleshooting)
 * [Contributing](#contributing)
 
-## This fork
+## What changed in 2.0.0
 
-Maintained by [container-registry.com], forked from [goharbor/harbor-scanner-clair], which has
-had no commits since August 2020.
+2.0.0 is a rewrite. The adapter is maintained by [container-registry.com] and forked from
+[goharbor/harbor-scanner-clair], which has had no commits since August 2020.
 
-What this fork changed:
+* **Clair v4 (4.9+) indexer and matcher API.** The v1 `/v1/layers` path and the direct PostgreSQL
+  read are gone, and with them `lib/pq`, `xo/dburl` and `SCANNER_CLAIR_DATABASE_URL`. Setting that
+  variable is now a startup error rather than a silent no-op.
+* **JWT PSK authentication** against Clair, matching Clair's `auth.psk` block.
+* **A durable job queue in PostgreSQL** with a per-job deadline and a draining shutdown, in place
+  of the unbounded in-process goroutine pool. A restart no longer loses in-flight scans. Jobs live
+  in one `scan_job` table that the adapter creates at startup; workers claim a row with `FOR UPDATE
+  SKIP LOCKED`, so a crashed worker's job is reclaimed once its lock expires, a late write from a
+  process that already lost the job cannot land, and a failure can never overwrite a finished
+  report. The adapter needs no separate key-value store: Clair already requires PostgreSQL, so this
+  adds nothing new to operate.
+* **Reports in `application/vnd.security.vulnerability.report; version=1.1`** with
+  `preferred_cvss` populated from Clair's CVSS enricher, so Harbor renders scores and vectors.
+* **`kube/` is gone**, replaced by the Helm chart under [`deploy/chart`](deploy/chart).
+* Scanner metadata is the constant `Clair` / `Project Quay` / `4.x`. Clair 4.9.0 exposes no release
+  version over HTTP, so there is nothing to read; the vulnerability database timestamp does come
+  from Clair.
 
-* Module path `github.com/container-registry/harbor-scanner-clair`, built with the Go version
-  declared in [`go.mod`](go.mod).
-* A Task-based build with tool and base-image pins in [`versions.env`](versions.env), in place
-  of the Makefile, Travis CI and a GoReleaser config current GoReleaser refuses to read.
-* Multi-arch images (`linux/amd64`, `linux/arm64`) published to
-  `8gears.container-registry.com/8gcr/harbor-scanner-clair`, signed keylessly with cosign and
-  carrying an SBOM attestation. Upstream published amd64-only images to Docker Hub and stopped
-  at `1.1.1` in August 2020.
-* An Alpine-based image that runs as a non-root user and has a health probe, in place of the
-  four-line `FROM scratch` image that ran as root.
-* Releases automated with release-please.
+Still true, and not gaps in the port:
 
-What this fork did not change. The adapter code is untouched, so these are properties of the
-adapter itself and not gaps in the port:
+* **Vulnerability reports only, no SBOM.** Harbor derives its registry-wide Security Hub numbers
+  from the capabilities of the system-default scanner, so do not make this adapter the default if
+  you also want SBOM coverage.
+* **Harbor has not bundled Clair since 2.2** (`goharbor/harbor` commit `590212b48`, November 2020).
+  You operate the Clair backend yourself and register this adapter with Harbor by URL.
 
-* It speaks the **Clair v1 API** against CoreOS Clair 2.x, which is end of life. Clair 4.x is
-  not supported.
-* **Harbor has not bundled Clair since 2.2** (`goharbor/harbor` commit `590212b48`, November
-  2020). Current Harbor neither deploys nor configures Clair, so you operate the Clair server
-  yourself and register this adapter with Harbor by URL.
-* It implements **Harbor scanner adapter API v1.0** only: vulnerability reports, no SBOM, no
-  capability negotiation. Harbor derives its registry-wide Security Hub numbers from the
-  capabilities of the system-default scanner, so this adapter should not be made the default.
-* Scan jobs run on an in-process goroutine pool with no concurrency limit and no retries.
-  Redis holds results, not a queue, so a restart loses every in-flight scan and leaves its
-  record `Running` until the TTL expires.
-* The scanner metadata Harbor displays is hardcoded to Clair / CoreOS / 2.x. It is not read
-  from the backend.
+## Prerequisites
 
-Known defects that were deliberately left in place are listed under "Known rough edges" in
-[`CLAUDE.md`](CLAUDE.md).
+* **Clair 4.9 or newer**, reachable from the adapter, and reachable *from Clair* to your registry.
+  Clair fetches the layers.
+* **A PostgreSQL database for the adapter**, with a role that owns it. The adapter creates its
+  `scan_job` table there at startup. Clair's own PostgreSQL instance is the intended home: create a
+  separate database on it, for example `scanner`, and point `SCANNER_STORE_POSTGRES_URL` at it. The
+  adapter never touches Clair's tables.
+* **Harbor 2.x**, which registers the adapter by URL.
 
 ## Configuration
 
-Configuration of the adapter is done via environment variables at startup.
+Configuration is environment variables read once at startup. Anything unusable is rejected there
+rather than failing on the first scan.
 
-| Name | Default Value | Description |
-|------|---------------|-------------|
-| `SCANNER_LOG_LEVEL`                | `info` | The log level of `trace`, `debug`, `info`, `warn`, `warning`, `error`, `fatal` or `panic`. The standard logger logs entries with that level or anything above it. |
-| `SCANNER_API_SERVER_ADDR`          | `:8080` | Binding address for the API HTTP server. |
-| `SCANNER_API_SERVER_TLS_CERTIFICATE` | | The absolute path to the x509 certificate file. |
-| `SCANNER_API_SERVER_TLS_KEY`         | | The absolute path to the x509 private key file. |
-| `SCANNER_TLS_INSECURE_SKIP_VERIFY` | `false` | Controls whether an HTTP client verifies the server's certificate chain and host name. |
-| `SCANNER_TLS_CLIENTCAS` | | An array of absolute paths to x509 CA files that will be added to host's root CA set. |
-| `SCANNER_API_SERVER_READ_TIMEOUT`  | `15s` | The maximum duration for reading the entire request, including the body. |
-| `SCANNER_API_SERVER_WRITE_TIMEOUT` | `15s` | The maximum duration before timing out writes of the response. |
-| `SCANNER_API_SERVER_IDLE_TIMEOUT`  | `60s` | The maximum amount of time to wait for the next request when keep-alives are enabled. |
-| `SCANNER_CLAIR_URL`                | `http://harbor-harbor-clair:6060` | Clair URL |
-| `SCANNER_CLAIR_DATABASE_URL`       | | The Clair database URL, it is used to fetch vulnerability database updated time of the Clair. Its format is `postgresql://user:password@host/db?sslmode=disable` |
-| `SCANNER_STORE_REDIS_URL`                     | `redis://harbor-harbor-redis:6379` | Redis server URI for a Redis store. The URI supports schemas to connect to a standalone Redis server, i.e. `redis://user:password@standalone_host:port/db-number` and Redis Sentinel deployment, i.e. `redis+sentinel://user:password@sentinel_host1:port1,sentinel_host2:port2/monitor-name/db-number`. |
-| `SCANNER_STORE_REDIS_POOL_MAX_ACTIVE`         | `5`   | The max number of connections allocated by the pool for a Redis store. |
-| `SCANNER_STORE_REDIS_POOL_MAX_IDLE`           | `5`   | The max number of idle connections in the pool for a Redis store. |
-| `SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT`       | `5m`  | Close connections after remaining idle for this duration. |
-| `SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT` | `1s`  | The timeout for connecting to the Redis server. |
-| `SCANNER_STORE_REDIS_POOL_READ_TIMEOUT`       | `1s`  | The timeout for reading a single Redis command reply. |
-| `SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT`      | `1s`  | The timeout for writing a single Redis command. |
-| `SCANNER_STORE_REDIS_NAMESPACE`       | `harbor.scanner.clair:store` | A namespace for keys in a redis store. |
-| `SCANNER_STORE_REDIS_SCAN_JOB_TTL`    | `1h`                         | The time to live for persisting scan jobs and associated scan reports. |
+### General
 
-## Deploy to Kubernetes
+| Name | Default | Description |
+|------|---------|-------------|
+| `SCANNER_LOG_LEVEL` | `info` | One of `trace`, `debug`, `info`, `warn`, `error`. `trace` means debug. |
 
-[`kube/harbor-scanner-clair.yaml`](kube/harbor-scanner-clair.yaml) runs the published image
-`8gears.container-registry.com/8gcr/harbor-scanner-clair:latest` as a single-replica
-`Deployment` behind a `LoadBalancer` `Service` on port 8443, serving HTTPS. Its inlined env
-block points `SCANNER_CLAIR_URL` and `SCANNER_STORE_REDIS_URL` at in-cluster defaults; edit
-them for your Clair and Redis before applying. There is no Helm chart yet.
+### API server
 
-1. Configure the adapter to handle TLS traffic:
-   1. Generate certificate and private key files:
-      ```
-      $ openssl genrsa -out tls.key 2048
-      $ openssl req -new -x509 \
-        -key tls.key \
-        -out tls.crt \
-        -days 365 \
-        -subj /CN=harbor-scanner-clair
-      ```
-   2. Create a `tls` secret from the two generated files:
-      ```
-      $ kubectl create secret tls harbor-scanner-clair-tls \
-        --cert=tls.crt \
-        --key=tls.key
-      ```
-2. Create the `harbor-scanner-clair` deployment and service:
-   ```
-   kubectl apply -f kube/harbor-scanner-clair.yaml
-   ```
-3. If everything is fine you should be able to get the scanner's metadata:
-   ```
-   kubectl port-forward service/harbor-scanner-clair 8443:8443 &> /dev/null &
-   curl -vk https://localhost:8443/api/v1/metadata | jq
-   ```
-4. Register the adapter in Harbor under Administration > Interrogation Services > Scanners,
-   using the URL at which Harbor can reach the service, and tick **Skip certificate
-   verification**: the certificate generated above is self-signed and carries no SAN. Harbor's
-   **Test Connection** button calls the same `/api/v1/metadata` endpoint.
+| Name | Default | Description |
+|------|---------|-------------|
+| `SCANNER_API_SERVER_ADDR` | `:8080` | Binding address for the API HTTP server. |
+| `SCANNER_API_SERVER_TLS_CERTIFICATE` | | Absolute path to the x509 certificate. Both this and the key, or neither. |
+| `SCANNER_API_SERVER_TLS_KEY` | | Absolute path to the x509 private key. |
+| `SCANNER_API_SERVER_CLIENT_CAS` | | CA bundles that verify inbound client certificates. Requires TLS. |
+| `SCANNER_API_SERVER_READ_TIMEOUT` | `15s` | Maximum duration for reading the entire request. Must be positive. |
+| `SCANNER_API_SERVER_WRITE_TIMEOUT` | `15s` | Maximum duration before timing out response writes. Must be positive. |
+| `SCANNER_API_SERVER_IDLE_TIMEOUT` | `60s` | How long to wait for the next request on a keep-alive connection. |
+| `SCANNER_API_SERVER_METRICS_ENABLED` | `true` | Serve `/metrics`. |
+| `SCANNER_API_AUTH_API_KEY` | | When set, `/api/v1/*` requires this value in `X-ScannerAdapter-API-Key`. The probes and `/metrics` are never behind it. |
 
-To try a locally built image instead of the published one, build it into the cluster's Docker
-daemon and change the `image:` field in the manifest:
+### Clair
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `SCANNER_CLAIR_URL` | `http://clair:6060` | Clair API root. In distributed mode it must reach both the indexer and the matcher. |
+| `SCANNER_CLAIR_PSK` | | Pre-shared key, base64 exactly as in Clair's `auth.psk.key`. Empty sends no `Authorization` header at all. Invalid base64 is a startup error. |
+| `SCANNER_CLAIR_JWT_ISSUER` | `harbor-scanner-clair` | The `iss` claim. It must appear in Clair's `auth.psk.iss` list. |
+| `SCANNER_CLAIR_INDEX_TIMEOUT` | `10m` | Bounds the synchronous index call, blob fetches included. Keep it below Harbor's registry `token_expiration` (30m by default). |
+| `SCANNER_CLAIR_REQUEST_TIMEOUT` | `30s` | Bounds every other Clair call and the registry manifest fetch. |
+| `SCANNER_CLAIR_REPORT_RETRY_TIMEOUT` | `5m` | Budget for the report retry loop over Clair's 202, 404 and 429 answers. |
+
+### Store and job queue
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `SCANNER_STORE_BACKEND` | `postgres` | `postgres`, or `memory` for development. Memory keeps everything in one process: nothing survives a restart and a second replica shares no state. |
+| `SCANNER_STORE_POSTGRES_URL` | | Connection string, `postgres://user:password@host:5432/scanner?sslmode=require`. Required when the backend is `postgres`, parsed and rejected at startup if it is not a valid DSN. Treat it as a secret. |
+| `SCANNER_STORE_POSTGRES_MAX_CONNS` | `5` | Maximum connections in the pool, per replica. |
+| `SCANNER_STORE_SCAN_JOB_TTL` | `1h` | How long a scan job and its report live. See the invariant below. |
+| `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` | `1` | Scans one replica runs at once. Memory is per worker; prefer more replicas. |
+
+`SCANNER_STORE_SCAN_JOB_TTL` **must exceed the worst-case queue wait plus the worst-case scan
+duration.** Harbor's report polling has no total timeout: it builds a fresh timer inside its poll
+loop and throws it away on every 302, so the only thing that ends a queued job is this TTL. When
+the record expires the adapter answers 404 and Harbor reports the scan as failed.
+
+The 1.x store variables are rejected at startup rather than ignored: an upgraded deployment that
+still sets them would otherwise connect nowhere and fail on the first scan.
+
+### Outbound TLS
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `SCANNER_TLS_CLIENTCAS` | | CA bundles appended to the system pool used to dial Clair and the registry. Despite the name, this is outbound trust. |
+| `SCANNER_TLS_INSECURE_SKIP_VERIFY` | `false` | Skip certificate verification on outbound calls. |
+
+### Proxy
+
+| Name | Default | Description |
+|------|---------|-------------|
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | | Standard Go proxy variables, honoured on every outbound call. |
+
+## Deploy with Helm
+
+The chart lives in [`deploy/chart`](deploy/chart) and is published as an OCI artifact. It deploys
+the adapter only: bring your own Clair 4.x and its PostgreSQL.
 
 ```
-eval $(minikube docker-env -p harbor)
-task image:local
+helm install harbor-scanner-clair \
+  oci://8gears.container-registry.com/8gcr/charts/harbor-scanner-clair \
+  --set clair.url=http://clair.clair.svc:6060 \
+  --set clair.psk=<base64 psk>
 ```
+
+[`deploy/chart/README.md`](deploy/chart/README.md) documents every value.
+[`deploy/chart/example/external-clair/`](deploy/chart/example/external-clair) is a working
+evaluation-grade Clair 4.x plus PostgreSQL to install alongside it.
+
+Clair, not the adapter, fetches the layers. Whatever you deploy has to be able to reach the
+registry URL Harbor sends in the scan request, which is Harbor's internal core address. Check your
+NetworkPolicies and DNS in Clair's namespace before blaming the adapter.
+
+## Registering with Harbor
+
+In the Harbor UI go to **Administration > Interrogation Services > Scanners** and add a scanner
+with the URL at which Harbor can reach the adapter. **Test Connection** calls `GET
+/api/v1/metadata`, which is also the quickest check by hand:
+
+```
+curl -s http://harbor-scanner-clair:8080/api/v1/metadata | jq
+```
+
+The adapter advertises `registry-authorization-type: Bearer`. Harbor mints a pull-scoped registry
+token per scan and sends it in `registry.authorization`; the adapter forwards that value verbatim
+as the `Authorization` header on each layer, and Clair uses it to fetch the blob. There is no token
+exchange and nothing to configure. If your registry redirects blob requests to object storage, the
+redirect works: Go drops the `Authorization` header on the cross-host hop and the presigned URL
+authenticates on its own.
+
+## Troubleshooting
+
+**Every scan sits at 202 and reports never arrive.** Clair's matcher answers `202 Accepted` until
+it has vulnerability data, and the first update populates that. Watch the adapter's `/probe/ready`,
+or ask Clair directly:
+
+```
+curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer <psk jwt>" \
+  http://clair:6060/matcher/api/v1/vulnerability_report/sha256:$(printf '0%.0s' {1..64})
+```
+
+`202` means not ready, `404` means ready. Note what ready means: Clair checks `SELECT EXISTS(SELECT
+1 FROM vuln)` and latches the answer, so it flips as soon as **one** updater commits rows. It is
+not a signal that the first update cycle finished, and never a signal that CVSS enrichment is
+loaded. Right after a fresh database you can get reports with no CVSS for a minute or two.
+
+**Scans fail with `[clair_index] ... has no index report`.** Clair returned 404 for a manifest the
+adapter believed it had indexed. Usually Clair could not fetch the blobs: check Clair's own log for
+`layers fetch` errors, and check that Clair can reach the registry URL from the scan request.
+
+**Scans fail with `[clair_unavailable]` and Clair logs 429.** Clair's concurrency middleware is
+rejecting requests. Lower `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` or the adapter replica count, or
+raise `indexer.index_report_request_concurrency` in Clair.
+
+**Scans fail with `[auth] clair rejected the adapter's credentials`.** Clair returned 401. Either
+`SCANNER_CLAIR_PSK` does not match `auth.psk.key`, or `SCANNER_CLAIR_JWT_ISSUER` is not in Clair's
+`auth.psk.iss` list. The key is base64 on both sides. Clair allows 15s of clock leeway.
+
+**The adapter exits at startup on `applying the scan_job schema`.** The role in
+`SCANNER_STORE_POSTGRES_URL` cannot create the table. The adapter runs `CREATE TABLE IF NOT EXISTS
+scan_job` and two `CREATE INDEX IF NOT EXISTS` statements on every start, so the role has to own
+the database or hold `CREATE` on its schema. Either grant it, or create the table by hand with the
+DDL in `pkg/persistence/postgres/store.go` and grant the role `SELECT, INSERT, UPDATE, DELETE` on
+it.
+
+**Scans fail with `[unscannable_layer]`.** The artifact is not an image Clair can index: a cosign
+signature, an SBOM attestation, or a Windows image with foreign layers. Harbor scans these because
+they are artifacts in the repository; the failure is correct.
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup, the build and test commands,
-and the commit conventions releases depend on.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup, the test tiers and the commit
+conventions releases depend on.
 
 [release-img]: https://img.shields.io/github/release/container-registry/harbor-scanner-clair.svg
 [release]: https://github.com/container-registry/harbor-scanner-clair/releases
@@ -144,5 +225,5 @@ and the commit conventions releases depend on.
 [container-registry.com]: https://container-registry.com
 [goharbor/harbor-scanner-clair]: https://github.com/goharbor/harbor-scanner-clair
 
-[clair-url]: https://github.com/coreos/clair
+[clair-url]: https://github.com/quay/clair
 [image-vulnerability-scanning-proposal]: https://github.com/goharbor/community/blob/master/proposals/pluggable-image-vulnerability-scanning_proposal.md

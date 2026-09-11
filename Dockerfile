@@ -14,7 +14,7 @@ FROM alpine:${ALPINE_BASE_IMAGE_VERSION}
 ARG TARGETARCH
 
 LABEL org.opencontainers.image.title="harbor-scanner-clair" \
-      org.opencontainers.image.description="Harbor scanner adapter for Clair" \
+      org.opencontainers.image.description="Harbor scanner adapter for Clair 4.x" \
       org.opencontainers.image.source="https://github.com/container-registry/harbor-scanner-clair" \
       org.opencontainers.image.licenses="Apache-2.0"
 
@@ -27,8 +27,8 @@ COPY bin/linux-${TARGETARCH}/scanner-clair /home/scanner/bin/scanner-clair
 
 RUN chown -R scanner:scanner /home/scanner
 
-# The API server binds SCANNER_API_SERVER_ADDR, default :8080; the kube manifest
-# and the Harbor integration use :8443 with TLS.
+# The API server binds SCANNER_API_SERVER_ADDR, default :8080; the chart keeps
+# that port in TLS mode and only mounts the certificate and key.
 EXPOSE 8080
 EXPOSE 8443
 # Shell form so port and scheme follow SCANNER_API_SERVER_ADDR and the TLS config
@@ -39,6 +39,8 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
 
 USER scanner
 
-# No ENV version stamp: GetScannerMetadata() hardcodes Clair/CoreOS/2.x in
-# pkg/etc/config.go and reads no env var, unlike harbor-scanner-trivy.
+# No ENV version stamp: the scanner metadata is the constant Clair / Project
+# Quay / 4.x in pkg/harbor/model.go. Clair 4.9.0 exposes no release version over
+# HTTP - no version header, and its OpenAPI info.version is the API version - so
+# there is nothing to bake in or to read back.
 ENTRYPOINT ["/home/scanner/bin/scanner-clair"]
