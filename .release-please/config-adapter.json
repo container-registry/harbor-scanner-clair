@@ -28,10 +28,6 @@
       "section": "Performance Improvements"
     },
     {
-      "type": "upstream",
-      "section": "Upstream"
-    },
-    {
       "type": "revert",
       "section": "Reverts"
     },
