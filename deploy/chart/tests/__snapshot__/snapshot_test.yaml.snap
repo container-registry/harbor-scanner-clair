@@ -24,7 +24,7 @@ matches the GitOps render (external secrets, digest-pinned image, TLS):
       template:
         metadata:
           annotations:
-            checksum/config: c9e71f7f5182481114ad6415c90565703f73aad3e9d9bb6b61e329b116e7ce7c
+            checksum/config: 253e207b584014710a31c4b9b461dc14bd0dbbd8282c5fbfc1642185ec4f7b80
           labels:
             app.kubernetes.io/component: scanner-adapter
             app.kubernetes.io/instance: harbor-scanner-clair
@@ -47,36 +47,34 @@ matches the GitOps render (external secrets, digest-pinned image, TLS):
                   value: 15s
                 - name: SCANNER_API_SERVER_IDLE_TIMEOUT
                   value: 60s
+                - name: SCANNER_API_SERVER_METRICS_ENABLED
+                  value: "true"
                 - name: SCANNER_API_SERVER_TLS_CERTIFICATE
                   value: /certs/tls.crt
                 - name: SCANNER_API_SERVER_TLS_KEY
                   value: /certs/tls.key
                 - name: SCANNER_CLAIR_URL
                   value: http://clair.clair.svc:6060
-                - name: SCANNER_CLAIR_DATABASE_URL
+                - name: SCANNER_CLAIR_PSK
                   valueFrom:
                     secretKeyRef:
-                      key: databaseUrl
-                      name: harbor-scanner-clair-database
-                - name: SCANNER_STORE_REDIS_URL
+                      key: psk
+                      name: harbor-scanner-clair-psk
+                - name: SCANNER_CLAIR_JWT_ISSUER
+                  value: harbor-scanner-clair
+                - name: SCANNER_CLAIR_INDEX_TIMEOUT
+                  value: 10m
+                - name: SCANNER_CLAIR_REQUEST_TIMEOUT
+                  value: 30s
+                - name: SCANNER_STORE_BACKEND
+                  value: postgres
+                - name: SCANNER_STORE_POSTGRES_URL
                   valueFrom:
                     secretKeyRef:
                       key: url
-                      name: harbor-scanner-clair-redis
-                - name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
-                  value: "5"
-                - name: SCANNER_STORE_REDIS_POOL_MAX_IDLE
-                  value: "5"
-                - name: SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT
-                  value: 5m
-                - name: SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_POOL_READ_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_NAMESPACE
-                  value: harbor.scanner.clair:store
+                      name: harbor-scanner-clair-postgres
+                - name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+                  value: "1"
                 - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
                   value: "false"
               envFrom:
@@ -212,7 +210,7 @@ matches the default render:
       template:
         metadata:
           annotations:
-            checksum/config: 9a83c77dfe1478e31da59c875be52fe26b871eefc001c3ec0a2232c62f22e581
+            checksum/config: 8defc0423a7864e51f106794586243806fa9e3c52515a7571f5923a149e85797
           labels:
             app.kubernetes.io/component: scanner-adapter
             app.kubernetes.io/instance: harbor-scanner-clair
@@ -235,26 +233,27 @@ matches the default render:
                   value: 15s
                 - name: SCANNER_API_SERVER_IDLE_TIMEOUT
                   value: 60s
+                - name: SCANNER_API_SERVER_METRICS_ENABLED
+                  value: "true"
                 - name: SCANNER_CLAIR_URL
-                  value: http://harbor-harbor-clair:6060
-                - name: SCANNER_STORE_REDIS_URL
-                  value: redis://harbor-harbor-redis:6379
-                - name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
-                  value: "5"
-                - name: SCANNER_STORE_REDIS_POOL_MAX_IDLE
-                  value: "5"
-                - name: SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT
-                  value: 5m
-                - name: SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_POOL_READ_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_NAMESPACE
-                  value: harbor.scanner.clair:store
-                - name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+                  value: http://clair:6060
+                - name: SCANNER_CLAIR_JWT_ISSUER
+                  value: harbor-scanner-clair
+                - name: SCANNER_CLAIR_INDEX_TIMEOUT
+                  value: 10m
+                - name: SCANNER_CLAIR_REQUEST_TIMEOUT
+                  value: 30s
+                - name: SCANNER_STORE_BACKEND
+                  value: postgres
+                - name: SCANNER_STORE_POSTGRES_URL
+                  valueFrom:
+                    secretKeyRef:
+                      key: url
+                      name: harbor-scanner-clair
+                - name: SCANNER_STORE_SCAN_JOB_TTL
                   value: 1h
+                - name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+                  value: "1"
                 - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
                   value: "false"
               image: 8gears.container-registry.com/8gcr/harbor-scanner-clair:v9.9.9-test
@@ -376,7 +375,7 @@ matches the multi-replica render:
       template:
         metadata:
           annotations:
-            checksum/config: 9a83c77dfe1478e31da59c875be52fe26b871eefc001c3ec0a2232c62f22e581
+            checksum/config: 8defc0423a7864e51f106794586243806fa9e3c52515a7571f5923a149e85797
           labels:
             app.kubernetes.io/component: scanner-adapter
             app.kubernetes.io/instance: harbor-scanner-clair
@@ -399,26 +398,27 @@ matches the multi-replica render:
                   value: 15s
                 - name: SCANNER_API_SERVER_IDLE_TIMEOUT
                   value: 60s
+                - name: SCANNER_API_SERVER_METRICS_ENABLED
+                  value: "true"
                 - name: SCANNER_CLAIR_URL
-                  value: http://harbor-harbor-clair:6060
-                - name: SCANNER_STORE_REDIS_URL
-                  value: redis://harbor-harbor-redis:6379
-                - name: SCANNER_STORE_REDIS_POOL_MAX_ACTIVE
-                  value: "5"
-                - name: SCANNER_STORE_REDIS_POOL_MAX_IDLE
-                  value: "5"
-                - name: SCANNER_STORE_REDIS_POOL_IDLE_TIMEOUT
-                  value: 5m
-                - name: SCANNER_STORE_REDIS_POOL_CONNECTION_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_POOL_READ_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_POOL_WRITE_TIMEOUT
-                  value: 1s
-                - name: SCANNER_STORE_REDIS_NAMESPACE
-                  value: harbor.scanner.clair:store
-                - name: SCANNER_STORE_REDIS_SCAN_JOB_TTL
+                  value: http://clair:6060
+                - name: SCANNER_CLAIR_JWT_ISSUER
+                  value: harbor-scanner-clair
+                - name: SCANNER_CLAIR_INDEX_TIMEOUT
+                  value: 10m
+                - name: SCANNER_CLAIR_REQUEST_TIMEOUT
+                  value: 30s
+                - name: SCANNER_STORE_BACKEND
+                  value: postgres
+                - name: SCANNER_STORE_POSTGRES_URL
+                  valueFrom:
+                    secretKeyRef:
+                      key: url
+                      name: harbor-scanner-clair
+                - name: SCANNER_STORE_SCAN_JOB_TTL
                   value: 1h
+                - name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+                  value: "1"
                 - name: SCANNER_TLS_INSECURE_SKIP_VERIFY
                   value: "false"
               image: 8gears.container-registry.com/8gcr/harbor-scanner-clair:v9.9.9-test

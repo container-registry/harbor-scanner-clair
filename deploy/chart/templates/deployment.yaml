@@ -32,7 +32,7 @@ spec:
               annotation stable against unrelated template edits - and a Secret
               the chart does not own (the existingSecret family) is deliberately
               not covered: the chart cannot see its contents. */}}
-        checksum/config: {{ printf "%s|%s|%s|%s|%s" .Values.clair.databaseUrl .Values.api.tls.certificate .Values.api.tls.key (toYaml (.Values.config | default dict)) (toYaml (.Values.secret | default dict)) | sha256sum }}
+        checksum/config: {{ printf "%s|%s|%s|%s|%s|%s" .Values.clair.psk .Values.postgres.url .Values.api.tls.certificate .Values.api.tls.key (toYaml (.Values.config | default dict)) (toYaml (.Values.secret | default dict)) | sha256sum }}
         {{- with (include "harbor-scanner-clair.annotations" (dict "root" . "local" .Values.podAnnotations)) }}
         {{- . | trim | nindent 8 }}
         {{- end }}

@@ -5,9 +5,7 @@
 replicaCount: 1
 clair:
   url: http://clair.clair.svc:6060
-  databaseUrl: postgres://clair:hunter2@postgres:5432/clair?sslmode=disable
-redis:
-  url: redis://:hunter2@redis:6379/5
+  psk: aHVudGVyMg==
 api:
   tls:
     enabled: true
@@ -24,3 +22,8 @@ imageCredentials:
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
+store:
+  # A development backend, and a TTL below the index deadline: a scan that uses
+  # its full indexing budget expires before Harbor collects the report.
+  backend: memory
+  scanJobTTL: 5m

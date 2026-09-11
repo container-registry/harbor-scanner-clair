@@ -17,19 +17,19 @@ tests:
 
   - it: rejects a scan job TTL that is not a Go duration
     set:
-      store.redisScanJobTTL: abc
+      store.scanJobTTL: abc
     asserts:
       - failedTemplate:
-          errorPattern: "at '/store/redisScanJobTTL'"
+          errorPattern: "at '/store/scanJobTTL'"
 
   - it: rejects an empty scan job TTL, which the chart would emit verbatim
     set:
-      store.redisScanJobTTL: ""
+      store.scanJobTTL: ""
     asserts:
-      # The chart emits SCANNER_STORE_REDIS_SCAN_JOB_TTL unconditionally, so an
-      # empty value reaches time.ParseDuration and fails the adapter at startup.
+      # The chart emits SCANNER_STORE_SCAN_JOB_TTL unconditionally, so an empty
+      # value reaches time.ParseDuration and fails the adapter at startup.
       - failedTemplate:
-          errorPattern: "at '/store/redisScanJobTTL'"
+          errorPattern: "at '/store/scanJobTTL'"
 
   - it: rejects an API timeout that is not a Go duration
     set:
@@ -45,12 +45,12 @@ tests:
       - failedTemplate:
           errorPattern: "at '/image/digest'"
 
-  - it: rejects a non-Redis URL as the adapter's own store
+  - it: rejects a store URL that is not a PostgreSQL DSN
     set:
-      redis.url: http://example.com
+      postgres.url: http://example.com
     asserts:
       - failedTemplate:
-          errorPattern: "at '/redis/url'"
+          errorPattern: "at '/postgres/url'"
 
   - it: rejects an unknown log level
     set:
