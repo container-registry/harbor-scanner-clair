@@ -1,17 +1,16 @@
-package scanner
+package scan
 
 import (
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
-	"github.com/container-registry/harbor-scanner-clair/pkg/etc"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/manifest/schema2"
-	log "github.com/sirupsen/logrus"
 )
 
 type systemClock struct{}
@@ -20,24 +19,22 @@ func (c *systemClock) Now() time.Time {
 	return time.Now()
 }
 
-type Transformer interface {
-	ToClairLayers(req harbor.ScanRequest, manifest distribution.Manifest) []clair.Layer
-	ToHarborScanReport(artifact harbor.Artifact, layer *clair.Layer) harbor.ScanReport
-}
-
-type transformer struct {
+// Transformer maps between the Harbor and Clair wire models. The scanner
+// metadata is passed in rather than read from the environment so the value
+// Harbor sees in a report is the one it saw in /api/v1/metadata.
+type Transformer struct {
 	clock interface {
 		Now() time.Time
 	}
 }
 
-func NewTransformer() *transformer {
-	return &transformer{
+func NewTransformer() *Transformer {
+	return &Transformer{
 		clock: &systemClock{},
 	}
 }
 
-func (t *transformer) ToClairLayers(req harbor.ScanRequest, manifest distribution.Manifest) []clair.Layer {
+func (t *Transformer) ToClairLayers(req harbor.ScanRequest, manifest distribution.Manifest) []clair.Layer {
 	layers := make([]clair.Layer, 0)
 
 	// Form the chain by using the digests of all parent layers in the image, such that if another image is built
@@ -65,22 +62,24 @@ func (t *transformer) ToClairLayers(req harbor.ScanRequest, manifest distributio
 	return layers
 }
 
-func (t *transformer) buildBlobURL(endpoint, repository, digest string) string {
+func (t *Transformer) buildBlobURL(endpoint, repository, digest string) string {
 	return fmt.Sprintf("%s/v2/%s/blobs/%s", endpoint, repository, digest)
 }
 
-func (t *transformer) ToHarborScanReport(artifact harbor.Artifact, source *clair.Layer) harbor.ScanReport {
+func (t *Transformer) ToHarborScanReport(scanner harbor.Scanner, artifact harbor.Artifact, source *clair.Layer) harbor.ScanReport {
 	return harbor.ScanReport{
 		GeneratedAt:     t.clock.Now(),
-		Scanner:         etc.GetScannerMetadata(),
+		Scanner:         scanner,
 		Artifact:        artifact,
 		Severity:        t.toComponentsOverview(source),
 		Vulnerabilities: t.toVulnerabilityItems(source),
 	}
 }
 
-// TransformVuln is for running scanning job in both job service V1 and V2.
-func (t *transformer) toComponentsOverview(layer *clair.Layer) harbor.Severity {
+func (t *Transformer) toComponentsOverview(layer *clair.Layer) harbor.Severity {
+	if layer == nil {
+		return harbor.SevNone
+	}
 	vulnMap := make(map[harbor.Severity]int)
 	var temp harbor.Severity
 	for _, f := range layer.Features {
@@ -102,8 +101,8 @@ func (t *transformer) toComponentsOverview(layer *clair.Layer) harbor.Severity {
 	return overallSev
 }
 
-// transformVulnerabilities transforms the returned value of Clair API to a list of VulnerabilityItem
-func (t *transformer) toVulnerabilityItems(l *clair.Layer) []harbor.VulnerabilityItem {
+// toVulnerabilityItems transforms the returned value of the Clair API to a list of VulnerabilityItem
+func (t *Transformer) toVulnerabilityItems(l *clair.Layer) []harbor.VulnerabilityItem {
 	var res []harbor.VulnerabilityItem
 	if l == nil {
 		return res
@@ -133,7 +132,7 @@ func (t *transformer) toVulnerabilityItems(l *clair.Layer) []harbor.Vulnerabilit
 	return res
 }
 
-func (t *transformer) toLinks(link string) []string {
+func (t *Transformer) toLinks(link string) []string {
 	if link == "" {
 		return []string{}
 	}
@@ -142,7 +141,7 @@ func (t *transformer) toLinks(link string) []string {
 
 // toHarborSeverity parses the severity of clair to Harbor's Severity type.
 // If the string is not recognized the value will be set to unknown.
-func (t *transformer) toHarborSeverity(clairSev string) harbor.Severity {
+func (t *Transformer) toHarborSeverity(clairSev string) harbor.Severity {
 	switch sev := strings.ToLower(clairSev); sev {
 	case clair.SeverityNegligible:
 		return harbor.SevNegligible
@@ -157,7 +156,7 @@ func (t *transformer) toHarborSeverity(clairSev string) harbor.Severity {
 	case clair.SeverityUnknown:
 		return harbor.SevUnknown
 	default:
-		log.WithField("severity", sev).Warn("Unknown Clair severity")
+		slog.Warn("Unknown Clair severity", slog.String("severity", sev))
 		return harbor.SevUnknown
 	}
 }
