@@ -83,7 +83,7 @@ func scanRequest() harbor.ScanRequest {
 }
 
 func testScanner() harbor.Scanner {
-	return harbor.Scanner{Name: "Clair", Vendor: "CoreOS", Version: "2.x"}
+	return harbor.ClairScanner()
 }
 
 func queuedStore(t *testing.T) persistence.Store {
