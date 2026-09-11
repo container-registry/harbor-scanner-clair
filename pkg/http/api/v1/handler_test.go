@@ -66,6 +66,8 @@ func testConfig(t *testing.T) etc.Config {
 	config, err := etc.GetConfig()
 	require.NoError(t, err)
 	config.Clair.URL = "http://clair:6060"
+	config.Clair.IndexTimeout = 10 * time.Minute
+	config.Clair.PSK = ""
 	config.API.MetricsEnabled = false
 	// Hermetic against ambient env: a SCANNER_API_AUTH_API_KEY set in the
 	// developer's shell would otherwise arm the auth middleware and 401 every
@@ -265,12 +267,12 @@ func TestRequestHandler_AcceptScanRequest(t *testing.T) {
 		},
 		{
 			name:                "Should respond with error 500 when the job cannot be queued",
-			enqueuer:            &stubEnqueuer{err: errors.New("redis is down")},
+			enqueuer:            &stubEnqueuer{err: errors.New("the job store is down")},
 			requestBody:         validScanRequestJSON,
 			expectedEnqueued:    true,
 			expectedStatus:      http.StatusInternalServerError,
 			expectedContentType: api.MimeTypeError.String(),
-			expectedResponse:    errorJSON("enqueuing scan job: redis is down"),
+			expectedResponse:    errorJSON("enqueuing scan job: the job store is down"),
 		},
 	}
 
@@ -490,7 +492,9 @@ func TestRequestHandler_GetMetadata(t *testing.T) {
     "org.label-schema.build-date": "2026-09-05",
     "org.label-schema.vcs-ref": "deadbee",
     "org.label-schema.vcs": "https://github.com/container-registry/harbor-scanner-clair",
-    "env.SCANNER_CLAIR_URL": "http://clair:6060"
+    "env.SCANNER_CLAIR_URL": "http://clair:6060",
+    "env.SCANNER_CLAIR_INDEX_TIMEOUT": "10m0s",
+    "env.SCANNER_CLAIR_PSK_ENABLED": "false"
   }
 }`, rr.Body.String())
 	})

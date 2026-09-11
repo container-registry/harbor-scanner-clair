@@ -4,15 +4,20 @@
 package etc
 
 import (
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v6"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 )
 
 // Recognized values for SCANNER_STORE_BACKEND, in their canonical (normalized)
@@ -23,18 +28,20 @@ const (
 	StoreBackendMemory   = "memory"
 )
 
-// The job budget. These are constants for now; the Clair timeouts they will be
-// derived from do not exist yet.
+// The job budget on top of the two configurable Clair timeouts.
 const (
-	// indexBudget is how long the artifact may spend being indexed.
-	indexBudget = 10 * time.Minute
-	// reportBudget is how long the report may be waited for after indexing.
-	reportBudget = 5 * time.Minute
 	// jobOverhead covers the manifest fetch and the terminal store writes.
 	jobOverhead = 30 * time.Second
 	// lockOverhead keeps the row lock alive past the job it guards.
 	lockOverhead = 30 * time.Second
+	// ttlOverhead is the slack on the derived scan job TTL, following the same
+	// 2*budget+3s rule the trivy adapter applies to its scan timeout.
+	ttlOverhead = 3 * time.Second
 )
+
+// scanJobTTLEnv is looked up directly, because an unset TTL is derived from the
+// job budget and env.Parse cannot distinguish unset from explicitly zero.
+const scanJobTTLEnv = "SCANNER_STORE_SCAN_JOB_TTL"
 
 type BuildInfo struct {
 	Version string
@@ -81,7 +88,31 @@ type TLSConfig struct {
 }
 
 type ClairConfig struct {
-	URL string `env:"SCANNER_CLAIR_URL" envDefault:"http://harbor-harbor-clair:6060"`
+	// URL is Clair's API root. The default matches clairctl's; the 1.x default
+	// pointed at Harbor's bundled Clair, which no longer ships.
+	URL string `env:"SCANNER_CLAIR_URL" envDefault:"http://clair:6060"`
+	// PSK is the pre-shared key, base64 exactly as it appears in Clair's
+	// auth.psk.key. Empty means Clair runs unauthenticated.
+	PSK string `env:"SCANNER_CLAIR_PSK"`
+	// JWTIssuer must appear in Clair's auth.psk.iss list, or every request is
+	// rejected with a 401.
+	JWTIssuer string `env:"SCANNER_CLAIR_JWT_ISSUER" envDefault:"harbor-scanner-clair"`
+	// IndexTimeout bounds the synchronous index call, every layer fetch
+	// included. It has to stay under Harbor's registry token expiration
+	// (token_expiration, 30m by default): the token is minted when the scan is
+	// requested and Clair pulls the blobs with it.
+	IndexTimeout time.Duration `env:"SCANNER_CLAIR_INDEX_TIMEOUT" envDefault:"10m"`
+	// RequestTimeout bounds every other Clair call and the manifest GET.
+	RequestTimeout time.Duration `env:"SCANNER_CLAIR_REQUEST_TIMEOUT" envDefault:"30s"`
+	// ReportRetryTimeout is the budget for the whole report retry loop, which
+	// waits out a matcher that is still loading its first vulnerability data.
+	ReportRetryTimeout time.Duration `env:"SCANNER_CLAIR_REPORT_RETRY_TIMEOUT" envDefault:"5m"`
+}
+
+// IsPSKEnabled reports whether the adapter authenticates to Clair. Reported in
+// the scanner metadata; the key itself never is.
+func (c ClairConfig) IsPSKEnabled() bool {
+	return c.PSK != ""
 }
 
 type Store struct {
@@ -95,7 +126,9 @@ type Store struct {
 	// expires the adapter 404s and Harbor gives up. Raising worker concurrency
 	// shortens the wait; adding replicas is the supported way to do that,
 	// because memory is per worker.
-	ScanJobTTL time.Duration `env:"SCANNER_STORE_SCAN_JOB_TTL" envDefault:"1h"`
+	//
+	// Unset, it is derived from the job budget.
+	ScanJobTTL time.Duration `env:"SCANNER_STORE_SCAN_JOB_TTL"`
 }
 
 // Postgres is the connection to the database holding the scan_job table. It has
@@ -110,9 +143,10 @@ type JobQueue struct {
 	WorkerConcurrency int `env:"SCANNER_JOB_QUEUE_WORKER_CONCURRENCY" envDefault:"1"`
 }
 
-// JobDeadline is the longest a single job may legitimately take.
+// JobDeadline is the longest a single job may legitimately take: the index
+// call, the report retry loop, and the overhead around both.
 func (c Config) JobDeadline() time.Duration {
-	return indexBudget + reportBudget + jobOverhead
+	return c.Clair.IndexTimeout + c.Clair.ReportRetryTimeout + jobOverhead
 }
 
 // LockTTL is how long a claimed scan_job row stays locked. The lock must
@@ -120,6 +154,36 @@ func (c Config) JobDeadline() time.Duration {
 // per-job deadline always fires first, and a worker never outlives its claim.
 func (c Config) LockTTL() time.Duration {
 	return c.JobDeadline() + lockOverhead
+}
+
+// deriveScanJobTTL is the default store TTL: two whole job budgets plus slack,
+// so a job that waits one full budget in the queue and then runs for another
+// still has a record to write its result to.
+func deriveScanJobTTL(lockTTL time.Duration) time.Duration {
+	return 2*lockTTL + ttlOverhead
+}
+
+// ClairClientConfig is the Clair connection as pkg/clair wants it, so the
+// environment names live in exactly one place.
+func (c Config) ClairClientConfig() clair.Config {
+	return clair.Config{
+		URL:                c.Clair.URL,
+		PSK:                c.Clair.PSK,
+		Issuer:             c.Clair.JWTIssuer,
+		IndexTimeout:       c.Clair.IndexTimeout,
+		RequestTimeout:     c.Clair.RequestTimeout,
+		ReportRetryTimeout: c.Clair.ReportRetryTimeout,
+	}
+}
+
+// Outbound is the TLS configuration for everything the adapter dials: Clair and
+// the registry. RootCAs is the system pool plus SCANNER_TLS_CLIENTCAS.
+func (c TLSConfig) Outbound() *tls.Config {
+	return &tls.Config{
+		RootCAs:            c.RootCAs,
+		InsecureSkipVerify: c.InsecureSkipVerify, //nolint:gosec // opt-in via SCANNER_TLS_INSECURE_SKIP_VERIFY
+		MinVersion:         tls.VersionTLS12,
+	}
 }
 
 // LogLevel maps SCANNER_LOG_LEVEL onto a slog level. "trace" is accepted for
@@ -169,8 +233,18 @@ func GetConfig() (Config, error) {
 	}
 
 	cfg.Store.Backend = strings.ToLower(strings.TrimSpace(cfg.Store.Backend))
+	if _, set := os.LookupEnv(scanJobTTLEnv); !set {
+		cfg.Store.ScanJobTTL = deriveScanJobTTL(cfg.LockTTL())
+	}
 	if err := cfg.validate(); err != nil {
 		return cfg, err
+	}
+	if cfg.Store.ScanJobTTL < cfg.JobDeadline() {
+		// Not rejected: an operator may cap the TTL deliberately. But a job that
+		// runs to its deadline then finds its record expired and is lost.
+		slog.Warn("Scan job TTL is shorter than the job deadline; a slow but successful scan can expire before its report is stored",
+			slog.String("env", scanJobTTLEnv), slog.Duration("ttl", cfg.Store.ScanJobTTL),
+			slog.Duration("job_deadline", cfg.JobDeadline()))
 	}
 	return cfg, nil
 }
@@ -191,14 +265,15 @@ func (c Config) validate() error {
 	// timestamp never appears.
 	if _, ok := os.LookupEnv("SCANNER_CLAIR_DATABASE_URL"); ok {
 		return fmt.Errorf("SCANNER_CLAIR_DATABASE_URL is no longer supported: " +
-			"the adapter no longer connects to Clair's database, so the variable has no effect and must be removed")
+			"the adapter reads the vulnerability database timestamp from Clair's HTTP API, " +
+			"so the variable has no effect and must be removed")
 	}
 	// The Redis store is gone. An operator upgrading from 1.x who leaves these
 	// set would otherwise get an adapter that ignores them, connects nowhere and
 	// fails on the first scan with a message pointing at the wrong subsystem.
 	for removed, replacement := range map[string]string{
 		"SCANNER_STORE_REDIS_URL":          "SCANNER_STORE_POSTGRES_URL",
-		"SCANNER_STORE_REDIS_SCAN_JOB_TTL": "SCANNER_STORE_SCAN_JOB_TTL",
+		"SCANNER_STORE_REDIS_SCAN_JOB_TTL": scanJobTTLEnv,
 	} {
 		if _, ok := os.LookupEnv(removed); ok {
 			return fmt.Errorf("%s is no longer supported: the job store is Postgres, use %s instead",
@@ -227,8 +302,28 @@ func (c Config) validate() error {
 			return fmt.Errorf("%s must be positive, got %s", name, d)
 		}
 	}
-	if strings.TrimSpace(c.Clair.URL) == "" {
-		return fmt.Errorf("SCANNER_CLAIR_URL must not be empty")
+	if err := validateClairURL(c.Clair.URL); err != nil {
+		return err
+	}
+	// A PSK that is not base64 reaches Clair as a wrong key and comes back as a
+	// 401 on every scan, which reads like a permissions problem rather than a
+	// typo in a secret.
+	if c.Clair.PSK != "" {
+		if _, err := base64.StdEncoding.DecodeString(c.Clair.PSK); err != nil {
+			return fmt.Errorf("SCANNER_CLAIR_PSK must be standard base64, exactly as it appears in Clair's auth.psk.key: %w", err)
+		}
+	}
+	// A non-positive Clair timeout means "no deadline" once it reaches
+	// context.WithTimeout, so a wedged index call would hold a worker until the
+	// job lock expires instead of failing inside its budget.
+	for name, d := range map[string]time.Duration{
+		"SCANNER_CLAIR_INDEX_TIMEOUT":        c.Clair.IndexTimeout,
+		"SCANNER_CLAIR_REQUEST_TIMEOUT":      c.Clair.RequestTimeout,
+		"SCANNER_CLAIR_REPORT_RETRY_TIMEOUT": c.Clair.ReportRetryTimeout,
+	} {
+		if d <= 0 {
+			return fmt.Errorf("%s must be positive, got %s", name, d)
+		}
 	}
 	switch c.Store.Backend {
 	case StoreBackendPostgres, StoreBackendMemory:
@@ -257,7 +352,25 @@ func (c Config) validate() error {
 		return fmt.Errorf("SCANNER_STORE_POSTGRES_MAX_CONNS must be at least 1, got %d", c.Postgres.MaxConns)
 	}
 	if c.Store.ScanJobTTL <= 0 {
-		return fmt.Errorf("SCANNER_STORE_SCAN_JOB_TTL must be positive, got %s", c.Store.ScanJobTTL)
+		return fmt.Errorf("%s must be positive, got %s", scanJobTTLEnv, c.Store.ScanJobTTL)
+	}
+	return nil
+}
+
+// validateClairURL rejects a value the Clair client would only fail on at the
+// first scan. env.Parse takes any string, and a hostname without a scheme
+// produces requests to a relative URL that never leave the process.
+func validateClairURL(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("SCANNER_CLAIR_URL must not be empty")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("SCANNER_CLAIR_URL is not a valid URL: %w", err)
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("SCANNER_CLAIR_URL must be an absolute http(s) URL, got %q", value)
 	}
 	return nil
 }
