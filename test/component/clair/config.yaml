@@ -1,0 +1,57 @@
+---
+# Clair 4.x combo-mode configuration for the component tier.
+#
+# Two upstream traps are baked into the shape of this file. Since 4.7.0 an
+# unknown key aborts startup, and combo mode requires the indexer, matcher and
+# notifier blocks even though nothing here delivers notifications. Validate any
+# edit before committing it:
+#
+#   docker run --rm -v "$PWD/test/component/clair:/clair:ro" \
+#     --entrypoint /usr/bin/clairctl quay.io/projectquay/clair:4.9.0 \
+#     check-config /clair/config.yaml
+http_listen_addr: ":6060"
+# The introspection listener is outside the API's auth middleware, which is what
+# makes /readyz usable as a container healthcheck with no token.
+introspection_addr: ":8089"
+log_level: "info"
+
+indexer:
+  connstring: "host=postgres port=5432 user=clair password=clair dbname=clair sslmode=disable"
+  scanlock_retry: 10
+  layer_scan_concurrency: 5
+  migrations: true
+
+matcher:
+  connstring: "host=postgres port=5432 user=clair password=clair dbname=clair sslmode=disable"
+  indexer_addr: "http://localhost:6060"
+  migrations: true
+  period: "6h"
+
+notifier:
+  connstring: "host=postgres port=5432 user=clair password=clair dbname=clair sslmode=disable"
+  migrations: true
+  # 1h rather than the defaults: clairctl check-config lints anything faster as
+  # "interval is very fast", and nothing here consumes notifications anyway.
+  delivery_interval: "1h"
+  poll_interval: "1h"
+
+updaters:
+  sets:
+    # alpine alone produces an empty enrichments map. The CVSS enricher is its
+    # own updater set, and without it every assertion about preferred_cvss
+    # fails. It costs the bulk of the first update: measured on a laptop, the
+    # matcher answers after 16s with alpine alone and the clair.cvss walk of the
+    # NVD 2.0 feeds runs to 85s and peaks at 1805 MiB.
+    - "alpine"
+    - "clair.cvss"
+
+# The key is a throwaway for this compose stack; the adapter service and the
+# test's own probe token both sign with it.
+auth:
+  psk:
+    key: "Q9CT6HPYgE8EW7ulY/MJfonJdMxSbrbKJVhY8GsVAzc="
+    iss:
+      - "harbor-scanner-clair"
+
+metrics:
+  name: "prometheus"

@@ -19,8 +19,10 @@ about: Tell us about a problem you are experiencing
 
 - Harbor version:
 - Harbor Scanner Adapter for Clair version:
-- Clair version:
-- How Clair is deployed (Helm chart, raw manifests, compose, etc.):
+- Clair version (4.x):
+- Clair mode (combo / distributed):
+- Clair auth (PSK configured: yes/no):
+- How Clair is deployed (Deployment + ConfigMap, Quay Operator, compose, etc.):
 - Harbor installation process ([Installer script][harbor-installer], [Helm chart][harbor-helm], etc.):
 
 [harbor-helm]: https://goharbor.io/docs/2.3.0/install-config/harbor-ha-helm/
