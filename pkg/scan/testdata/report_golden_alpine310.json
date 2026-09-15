@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-09-05T12:00:00Z",
+  "artifact": {
+    "repository": "library/alpine",
+    "digest": "sha256:e515aad2ed234a5072c4d2ef86a1cb77d5bfe4b11aa865d9214875734c4eeb3c",
+    "mime_type": "application/vnd.docker.distribution.manifest.v2+json"
+  },
+  "scanner": {
+    "name": "Clair",
+    "vendor": "Project Quay",
+    "version": "4.9.0"
+  },
+  "severity": "Critical",
+  "vulnerabilities": [
+    {
+      "id": "CVE-2021-36159",
+      "package": "apk-tools",
+      "version": "2.10.6-r0",
+      "fix_version": "2.10.7-r0",
+      "severity": "Critical",
+      "description": "",
+      "links": [
+        "https://security.alpinelinux.org/vuln/CVE-2021-36159"
+      ],
+      "preferred_cvss": {
+        "score_v3": 9.1,
+        "vector_v2": "",
+        "vector_v3": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"
+      },
+      "vendor_attributes": {
+        "CVSS": {
+          "nvd": {
+            "V3Score": 9.1,
+            "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"
+          }
+        },
+        "clair": {
+          "distribution": "Alpine Linux v3.10",
+          "updater": "alpine-main-v3.10-updater"
+        }
+      }
+    }
+  ]
+}
