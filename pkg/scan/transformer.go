@@ -1,17 +1,18 @@
 package scan
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
 	"github.com/container-registry/harbor-scanner-clair/pkg/harbor"
-	"github.com/docker/distribution"
-	"github.com/docker/distribution/manifest/schema2"
 )
+
+// noFixSentinel is what Clair puts in fixed_in_version when a vulnerability has
+// no fix. Harbor renders the value verbatim, so "0" must not reach it.
+const noFixSentinel = "0"
 
 type systemClock struct{}
 
@@ -22,6 +23,9 @@ func (c *systemClock) Now() time.Time {
 // Transformer maps between the Harbor and Clair wire models. The scanner
 // metadata is passed in rather than read from the environment so the value
 // Harbor sees in a report is the one it saw in /api/v1/metadata.
+//
+// This is the transitional shape that keeps the scan path working on Clair v4;
+// CVSS, vendor attributes and dedup arrive with the report transformer.
 type Transformer struct {
 	clock interface {
 		Now() time.Time
@@ -34,129 +38,94 @@ func NewTransformer() *Transformer {
 	}
 }
 
-func (t *Transformer) ToClairLayers(req harbor.ScanRequest, manifest distribution.Manifest) []clair.Layer {
-	layers := make([]clair.Layer, 0)
-
-	// Form the chain by using the digests of all parent layers in the image, such that if another image is built
-	// on top of this image the layer name can be re-used.
-	shaChain := ""
-	for _, d := range manifest.References() {
-		if d.MediaType == schema2.MediaTypeImageConfig {
-			continue
-		}
-		shaChain += string(d.Digest) + "-"
-		l := clair.Layer{
-			Name: fmt.Sprintf("%x", sha256.Sum256([]byte(shaChain))),
-			Headers: map[string]string{
-				"Connection":    "close",
-				"Authorization": req.Registry.Authorization,
-			},
-			Format: "Docker",
-			Path:   t.buildBlobURL(req.Registry.URL, req.Artifact.Repository, string(d.Digest)),
-		}
-		if len(layers) > 0 {
-			l.ParentName = layers[len(layers)-1].Name
-		}
-		layers = append(layers, l)
-	}
-	return layers
-}
-
-func (t *Transformer) buildBlobURL(endpoint, repository, digest string) string {
-	return fmt.Sprintf("%s/v2/%s/blobs/%s", endpoint, repository, digest)
-}
-
-func (t *Transformer) ToHarborScanReport(scanner harbor.Scanner, artifact harbor.Artifact, source *clair.Layer) harbor.ScanReport {
+func (t *Transformer) ToHarborScanReport(scanner harbor.Scanner, artifact harbor.Artifact, source *clair.VulnerabilityReport) harbor.ScanReport {
+	items := t.toVulnerabilityItems(source)
 	return harbor.ScanReport{
 		GeneratedAt:     t.clock.Now(),
 		Scanner:         scanner,
 		Artifact:        artifact,
-		Severity:        t.toComponentsOverview(source),
-		Vulnerabilities: t.toVulnerabilityItems(source),
+		Severity:        rollUpSeverity(items),
+		Vulnerabilities: items,
 	}
 }
 
-func (t *Transformer) toComponentsOverview(layer *clair.Layer) harbor.Severity {
-	if layer == nil {
-		return harbor.SevNone
+// toVulnerabilityItems walks package_vulnerabilities, which is the only edge in
+// the report that ties a finding to the package it was found in.
+func (t *Transformer) toVulnerabilityItems(report *clair.VulnerabilityReport) []harbor.VulnerabilityItem {
+	items := make([]harbor.VulnerabilityItem, 0)
+	if report == nil {
+		return items
 	}
-	vulnMap := make(map[harbor.Severity]int)
-	var temp harbor.Severity
-	for _, f := range layer.Features {
-		sev := harbor.SevNone
-		for _, v := range f.Vulnerabilities {
-			temp = t.toHarborSeverity(v.Severity)
-			if temp > sev {
-				sev = temp
-			}
-		}
-		vulnMap[sev]++
-	}
-	overallSev := harbor.SevNone
-	for k := range vulnMap {
-		if k > overallSev {
-			overallSev = k
-		}
-	}
-	return overallSev
-}
 
-// toVulnerabilityItems transforms the returned value of the Clair API to a list of VulnerabilityItem
-func (t *Transformer) toVulnerabilityItems(l *clair.Layer) []harbor.VulnerabilityItem {
-	var res []harbor.VulnerabilityItem
-	if l == nil {
-		return res
-	}
-	features := l.Features
-	if features == nil {
-		return res
-	}
-	for _, f := range features {
-		vulnerabilities := f.Vulnerabilities
-		if vulnerabilities == nil {
+	for packageID, vulnerabilityIDs := range report.PackageVulnerabilities {
+		pkg, ok := report.Packages[packageID]
+		if !ok || pkg == nil {
+			slog.Warn("Clair reported a vulnerability for an unknown package",
+				slog.String("package_id", packageID))
 			continue
 		}
-		for _, v := range vulnerabilities {
-			vItem := harbor.VulnerabilityItem{
-				ID:          v.Name,
-				Pkg:         f.Name,
-				Version:     f.Version,
-				Severity:    t.toHarborSeverity(v.Severity),
-				FixVersion:  v.FixedBy,
-				Links:       t.toLinks(v.Link),
-				Description: v.Description,
+		for _, vulnerabilityID := range vulnerabilityIDs {
+			vulnerability, ok := report.Vulnerabilities[vulnerabilityID]
+			if !ok || vulnerability == nil {
+				continue
 			}
-			res = append(res, vItem)
+			items = append(items, harbor.VulnerabilityItem{
+				ID:          vulnerability.Name,
+				Pkg:         pkg.Name,
+				Version:     pkg.Version,
+				FixVersion:  fixVersion(vulnerability.FixedInVersion),
+				Severity:    toHarborSeverity(vulnerability.NormalizedSeverity),
+				Description: vulnerability.Description,
+				// links is a space-separated string on the wire, not an array.
+				Links: strings.Fields(vulnerability.Links),
+			})
 		}
 	}
-	return res
+
+	// Report order would otherwise follow Go's map iteration, which changes
+	// between runs of the same scan.
+	slices.SortFunc(items, func(a, b harbor.VulnerabilityItem) int {
+		return strings.Compare(a.Pkg+"\x00"+a.Version+"\x00"+a.ID, b.Pkg+"\x00"+b.Version+"\x00"+b.ID)
+	})
+	return items
 }
 
-func (t *Transformer) toLinks(link string) []string {
-	if link == "" {
-		return []string{}
+func fixVersion(fixedInVersion string) string {
+	if fixedInVersion == noFixSentinel {
+		return ""
 	}
-	return []string{link}
+	return fixedInVersion
 }
 
-// toHarborSeverity parses the severity of clair to Harbor's Severity type.
-// If the string is not recognized the value will be set to unknown.
-func (t *Transformer) toHarborSeverity(clairSev string) harbor.Severity {
-	switch sev := strings.ToLower(clairSev); sev {
-	case clair.SeverityNegligible:
+func rollUpSeverity(items []harbor.VulnerabilityItem) harbor.Severity {
+	overall := harbor.SevNone
+	for _, item := range items {
+		if item.Severity > overall {
+			overall = item.Severity
+		}
+	}
+	return overall
+}
+
+// toHarborSeverity maps Clair's normalized_severity onto Harbor's severity.
+// The two vocabularies are identical, so this is an identity mapping rather
+// than a translation; anything outside it means Clair changed its set.
+func toHarborSeverity(normalized string) harbor.Severity {
+	switch normalized {
+	case "Negligible":
 		return harbor.SevNegligible
-	case clair.SeverityLow:
+	case "Low":
 		return harbor.SevLow
-	case clair.SeverityMedium:
+	case "Medium":
 		return harbor.SevMedium
-	case clair.SeverityHigh:
+	case "High":
 		return harbor.SevHigh
-	case clair.SeverityCritical:
+	case "Critical":
 		return harbor.SevCritical
-	case clair.SeverityUnknown:
+	case "Unknown", "":
 		return harbor.SevUnknown
 	default:
-		slog.Warn("Unknown Clair severity", slog.String("severity", sev))
+		slog.Warn("Unknown Clair severity", slog.String("normalized_severity", normalized))
 		return harbor.SevUnknown
 	}
 }
