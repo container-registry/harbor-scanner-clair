@@ -49,25 +49,31 @@ jobs:
     name: Unit Tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    # The store and queue tests skip themselves without a database, so without
+    # this service the job would stay green while covering neither.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: scanner
+          POSTGRES_PASSWORD: scanner
+          POSTGRES_DB: scanner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - name: Run unit tests
+        env:
+          SCANNER_TEST_POSTGRES_URL: postgres://scanner:scanner@localhost:5432/scanner?sslmode=disable
         run: task test
-
-  test-integration:
-    name: Integration Tests
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-      - name: Run integration tests
-        run: task test:integration
 
   image:
     name: Image Build
