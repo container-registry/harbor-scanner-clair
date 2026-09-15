@@ -1,15 +1,19 @@
 # Alongside a goharbor/harbor-helm release
 
-Deploy the adapter into the same namespace as Harbor and point it at Harbor's
-own Redis. The values file overrides the Redis host and picks a dedicated
-database number so the adapter's keys do not share space with Harbor's.
+Deploy the adapter into the same namespace as Harbor. It shares nothing with
+Harbor's own datastores: scan jobs and reports live in the adapter's `scanner`
+database on Clair's PostgreSQL, so the values file only points at the Secret
+holding that DSN.
 
 **Harbor does not ship Clair.** It was removed in Harbor 2.2
 (`goharbor/harbor` commit `590212b48`, November 2020), and the goharbor chart
-has had no `clair` component since. `clair.url` therefore points at a Clair 2.x
-server you run yourself; there is no `harbor-harbor-clair` Service to fall back
-on in a current Harbor install, despite it still being the adapter's compiled-in
-default. See [`../external-clair/`](../external-clair/) for reference manifests.
+has had no `clair` component since. `clair.url` therefore points at a Clair 4.x
+server you run yourself; see [`../external-clair/`](../external-clair/) for
+reference manifests.
+
+Clair fetches the layer blobs itself, so it needs a network route to Harbor's
+registry - the adapter only hands it the URLs and Harbor's token. A Clair that
+cannot reach the registry fails every scan while looking perfectly healthy.
 
 ```sh
 helm install harbor-scanner-clair \
@@ -27,12 +31,12 @@ http://harbor-scanner-clair.harbor.svc:8080
 
 ## What you need first
 
-- A Clair 2.x server reachable from this namespace.
-- A Harbor release whose Redis Service is `harbor-redis`. Confirm the name -
-  the goharbor chart calls it `<release>-redis`, so a release named `harbor`
-  gives `harbor-redis`, and the older `<release>-harbor-redis` naming is still
-  out there. `kubectl -n harbor get svc | grep redis` settles it.
-- Redis database `5` free for the adapter. Harbor itself uses `0`-`4`.
+- A Clair 4.9+ server reachable from this namespace, which can itself reach
+  Harbor's registry.
+- A Secret named `harbor-scanner-clair-postgres` in this namespace, holding the
+  connection string for the adapter's own database on Clair's PostgreSQL; see
+  [`../external-clair/`](../external-clair/) for the database and the one-liner
+  that creates the Secret.
 
 ## Do not make this the system default scanner
 

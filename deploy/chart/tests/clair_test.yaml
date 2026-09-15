@@ -1,7 +1,7 @@
 ---
 # The Clair backend: the one thing this adapter cannot be configured without.
 # The chart does not deploy Clair, so every one of these is about pointing at
-# a server someone else runs.
+# a Clair 4.x server someone else runs, and authenticating to it.
 suite: clair backend
 release:
   name: t
@@ -22,14 +22,11 @@ tests:
     templates:
       - deployment.yaml
     asserts:
-      # Harbor removed its bundled Clair in 2.2, so this Service does not exist
-      # in a current Harbor install. It stays the default only because it is
-      # the adapter's compiled-in one (pkg/etc/config.go).
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: SCANNER_CLAIR_URL
-            value: "http://harbor-harbor-clair:6060"
+            value: "http://clair:6060"
 
   - it: rejects a Clair URL that is not HTTP
     templates:
@@ -47,89 +44,138 @@ tests:
       clair.url: ""
     asserts:
       - failedTemplate:
-          errorMessage: "clair.url must name the Clair 2.x API endpoint the adapter posts layers to; the chart does not deploy Clair."
+          errorMessage: "clair.url must name the Clair 4.x API endpoint the adapter indexes against; the chart does not deploy Clair."
 
-  - it: sets no database DSN by default
+  - it: emits the issuer and both Clair deadlines
     templates:
       - deployment.yaml
     asserts:
-      # Optional: it is read for one query, the vulnerability database
-      # timestamp. Scanning works without it.
+      # The index call is synchronous - Clair pulls and scans every layer
+      # inside it - so its deadline is an order of magnitude above the others.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_JWT_ISSUER
+            value: "harbor-scanner-clair"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_INDEX_TIMEOUT
+            value: "10m"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_REQUEST_TIMEOUT
+            value: "30s"
+
+  - it: sets no pre-shared key by default
+    templates:
+      - deployment.yaml
+    asserts:
+      # Optional: a Clair with no `auth` stanza takes unauthenticated calls.
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_CLAIR_DATABASE_URL
+            name: SCANNER_CLAIR_PSK
           any: true
 
-  - it: creates no Secret when no database DSN is configured
+  - it: puts no pre-shared key in the chart-managed Secret when none is configured
     templates:
       - secret.yaml
     asserts:
-      - hasDocuments:
-          count: 0
+      # The Secret itself still renders: it carries the store DSN. Only the
+      # `psk` key is absent.
+      - notExists:
+          path: data.psk
 
-  - it: stores an inlined DSN in a chart-managed Secret and reads it back
+  - it: stores an inlined pre-shared key in a chart-managed Secret and reads it back
     templates:
       - secret.yaml
       - deployment.yaml
     set:
-      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+      clair.psk: c2VjcmV0
     asserts:
+      # Double base64: `data` is base64 of the raw value, and the raw value is
+      # itself the base64 key Clair's auth.psk.key takes.
       - equal:
-          path: data.databaseUrl
-          value: cG9zdGdyZXM6Ly9jbGFpcjpwd0BkYjo1NDMyL2NsYWly
+          path: data.psk
+          value: YzJWamNtVjA=
         template: secret.yaml
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_CLAIR_DATABASE_URL
+            name: SCANNER_CLAIR_PSK
             valueFrom:
               secretKeyRef:
                 name: t-harbor-scanner-clair
-                key: databaseUrl
+                key: psk
         template: deployment.yaml
 
-  - it: reads the DSN from an existing Secret and key
+  - it: reads the pre-shared key from an existing Secret and key
     templates:
       - deployment.yaml
     set:
-      clair.existingSecret: my-dsn
-      clair.existingSecretKey: dsn
+      clair.existingSecret: my-psk
+      clair.existingSecretKey: key
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_CLAIR_DATABASE_URL
+            name: SCANNER_CLAIR_PSK
             valueFrom:
               secretKeyRef:
-                name: my-dsn
-                key: dsn
+                name: my-psk
+                key: key
 
-  - it: creates no Secret when the DSN comes from an existing one
+  - it: puts no pre-shared key in the chart-managed Secret when the key is yours
     templates:
       - secret.yaml
     set:
-      clair.existingSecret: my-dsn
+      clair.existingSecret: my-psk
     asserts:
-      - hasDocuments:
-          count: 0
+      - notExists:
+          path: data.psk
 
-  - it: refuses a DSN that is both inlined and externally owned
+  - it: refuses a pre-shared key that is both inlined and externally owned
     templates:
       - validate-values.yaml
     set:
-      clair.existingSecret: my-dsn
-      clair.databaseUrl: postgres://clair:pw@db:5432/clair
+      clair.existingSecret: my-psk
+      clair.psk: c2VjcmV0
     asserts:
       - failedTemplate:
-          errorMessage: "Set either clair.existingSecret or clair.databaseUrl, not both."
+          errorMessage: "Set either clair.existingSecret or clair.psk, not both."
 
   - it: refuses an existing Secret with no key named
     templates:
       - validate-values.yaml
     set:
-      clair.existingSecret: my-dsn
+      clair.existingSecret: my-psk
       clair.existingSecretKey: ""
     asserts:
       - failedTemplate:
-          errorMessage: "clair.existingSecretKey must name the key holding the Clair database DSN in clair.existingSecret."
+          errorMessage: "clair.existingSecretKey must name the key holding the base64 pre-shared key in clair.existingSecret."
+
+  - it: refuses an empty issuer while a pre-shared key is set
+    templates:
+      - validate-values.yaml
+    set:
+      clair.psk: c2VjcmV0
+      clair.jwtIssuer: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "clair.jwtIssuer must not be empty when a pre-shared key is set: Clair validates the JWT `iss` claim against its auth.psk.iss allow-list, and an empty issuer matches nothing."
+
+  - it: never emits the removed database URL
+    templates:
+      - deployment.yaml
+    set:
+      clair.psk: c2VjcmV0
+    asserts:
+      # Clair 4.x exposes updater state over HTTP, so the adapter no longer
+      # reads Clair's database and no value produces this variable.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SCANNER_CLAIR_DATABASE_URL
+          any: true

@@ -98,13 +98,13 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: SCANNER_STORE_REDIS_URL
-            value: "redis://harbor-harbor-redis:6379"
+            name: SCANNER_STORE_SCAN_JOB_TTL
+            value: "1h"
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: SCANNER_CLAIR_URL
-            value: "http://harbor-harbor-clair:6060"
+            value: "http://clair:6060"
 
   - it: combines every hatch at once
     set:

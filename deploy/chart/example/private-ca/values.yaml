@@ -1,6 +1,6 @@
 ---
-# Trust an internal CA for the registry, Redis, Clair, and anything else the
-# adapter dials. Mounted at /etc/scanner-clair/extra-ca, with SSL_CERT_DIR
+# Trust an internal CA for the registry, PostgreSQL, Clair, and anything else
+# the adapter dials. Mounted at /etc/scanner-clair/extra-ca, with SSL_CERT_DIR
 # listing both it and the system bundle.
 extraCA:
   existingSecret: corp-ca
@@ -11,8 +11,11 @@ extraCA:
   keys:
     - ca.crt
 
-redis:
-  url: rediss://harbor-redis:6379/5
+postgres:
+  # The DSN in this Secret carries `sslmode=verify-full`, which is what makes
+  # the bundle above the thing that verifies the database server. `require`
+  # encrypts without verifying and would render the CA pointless here.
+  existingSecret: harbor-scanner-clair-postgres
 
 clair:
   url: https://clair.clair.svc:6060
