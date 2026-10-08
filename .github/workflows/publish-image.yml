@@ -86,10 +86,11 @@ jobs:
 
       - name: Load build args
         run: |
-          # versions.env is the single source of truth for both pins.
+          # versions.env is the single source of truth for these pins.
           {
             echo "ALPINE_BASE_IMAGE_VERSION=$(grep '^ALPINE_BASE_IMAGE_VERSION=' versions.env | cut -d= -f2)"
-            echo "LPROBE_VERSION=$(grep '^LPROBE_VERSION=' versions.env | cut -d= -f2)"
+            echo "HEALTHPROBE_VERSION=$(grep '^HEALTHPROBE_VERSION=' versions.env | cut -d= -f2)"
+            echo "HEALTHPROBE_DIGEST=$(grep '^HEALTHPROBE_DIGEST=' versions.env | cut -d= -f2)"
           } >> "$GITHUB_ENV"
 
       # QEMU is the fallback only: with a remote BuildKit endpoint the image
@@ -130,7 +131,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             ALPINE_BASE_IMAGE_VERSION=${{ env.ALPINE_BASE_IMAGE_VERSION }}
-            LPROBE_VERSION=${{ env.LPROBE_VERSION }}
+            HEALTHPROBE_VERSION=${{ env.HEALTHPROBE_VERSION }}
+            HEALTHPROBE_DIGEST=${{ env.HEALTHPROBE_DIGEST }}
           tags: ${{ inputs.registry_address }}/${{ inputs.registry_project }}/harbor-scanner-clair
           # No tag is published here; the merge job assembles the tag from the
           # per-platform digests this pushes.
