@@ -1,11 +1,12 @@
 # Binary is pre-cross-compiled by `task build` into bin/linux-<arch>/.
-# ALPINE_BASE_IMAGE_VERSION and LPROBE_VERSION are pinned in versions.env and
+# ALPINE_BASE_IMAGE_VERSION and the HEALTHPROBE_* pins are in versions.env and
 # passed by `task image`; there are deliberately no defaults so builds fail
 # loudly without them.
 ARG ALPINE_BASE_IMAGE_VERSION
-ARG LPROBE_VERSION
+ARG HEALTHPROBE_VERSION
+ARG HEALTHPROBE_DIGEST
 
-FROM ghcr.io/fivexl/lprobe:${LPROBE_VERSION} AS lprobe
+FROM 8gears.container-registry.com/healthprobe/healthprobe:${HEALTHPROBE_VERSION}@${HEALTHPROBE_DIGEST} AS healthprobe
 
 FROM alpine:${ALPINE_BASE_IMAGE_VERSION}
 
@@ -22,7 +23,7 @@ LABEL org.opencontainers.image.title="harbor-scanner-clair" \
 # runAsUser/runAsGroup/fsGroup to 10000; the two must stay in sync.
 RUN addgroup -S -g 10000 scanner && adduser -S -G scanner -u 10000 -h /home/scanner scanner
 
-COPY --from=lprobe /lprobe /lprobe
+COPY --from=healthprobe /healthprobe /healthprobe
 COPY bin/linux-${TARGETARCH}/scanner-clair /home/scanner/bin/scanner-clair
 
 RUN chown -R scanner:scanner /home/scanner
@@ -35,7 +36,7 @@ EXPOSE 8443
 # at runtime (exec form gets no env expansion).
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
     CMD addr="${SCANNER_API_SERVER_ADDR:-:8080}"; \
-        /lprobe -port "${addr##*:}" -endpoint /probe/ready ${SCANNER_API_SERVER_TLS_CERTIFICATE:+-tls -tls-no-verify}
+        /healthprobe -port "${addr##*:}" -endpoint /probe/ready ${SCANNER_API_SERVER_TLS_CERTIFICATE:+-tls -tls-no-verify}
 
 USER scanner
 

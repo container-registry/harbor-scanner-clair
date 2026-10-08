@@ -5,17 +5,17 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Pins in versions.env annotated with a `# renovate:` comment",
+      "description": "Pins in versions.env annotated with a `# renovate:` comment; an image pin may carry a _DIGEST line after its version",
       "fileMatch": ["^versions\\.env$"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: versioning=(?<versioning>\\S+?))?(?: extractVersion=(?<extractVersion>\\S+?))?\\n[A-Z0-9_]+=(?<currentValue>\\S+)"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: versioning=(?<versioning>\\S+?))?(?: extractVersion=(?<extractVersion>\\S+?))?\\n[A-Z0-9_]+=(?<currentValue>\\S+)(?:\\n[A-Z0-9_]+_DIGEST=(?<currentDigest>sha256:[a-f0-9]{64}))?"
       ]
     }
   ],
   "packageRules": [
     {
-      "description": "The base image and lprobe ship inside the adapter image, so a bump is an adapter patch release",
-      "matchDepNames": ["alpine", "ghcr.io/fivexl/lprobe"],
+      "description": "The base image and healthprobe ship inside the adapter image, so a bump is an adapter patch release",
+      "matchDepNames": ["alpine", "8gears.container-registry.com/healthprobe/healthprobe"],
       "semanticCommits": "enabled",
       "semanticCommitType": "fix"
     },

@@ -129,11 +129,13 @@ check fails such a PR; split it rather than retype it. When `exclude-paths` in
 
 ## Tracking the base image
 
-The adapter image is built `FROM` Alpine and bundles the `lprobe` healthcheck
+The adapter image is built `FROM` Alpine and bundles the `healthprobe` healthcheck
 binary. Both pins live in `versions.env`, which is invisible to dependabot, so
 each carries a `# renovate:` annotation read by the regex manager in
 `renovate.json`. Both use the `docker` datasource, so a bump PR only appears once
-the tag actually exists.
+the tag actually exists. healthprobe is pinned by tag and digest: the regex
+manager reads the `HEALTHPROBE_DIGEST` line under `HEALTHPROBE_VERSION` and
+Renovate rewrites both in the same PR.
 
 `renovate.json` maps both to `fix:`, so squash-merging the Renovate PR makes
 release-please cut a matching adapter patch release. An Alpine minor bump changes
