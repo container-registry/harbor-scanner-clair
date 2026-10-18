@@ -1,0 +1,10 @@
+{
+  "manifest_hash": "sha256:90a4ffb96e4d60d7da32ee758c23ba398cf952715cb8e89bfddf6155dcd7daf6",
+  "state": "IndexError",
+  "packages": {},
+  "distributions": {},
+  "repository": {},
+  "environments": {},
+  "success": false,
+  "err": "fetcher: encountered error: unexpected status code: 401 Unauthorized"
+}
