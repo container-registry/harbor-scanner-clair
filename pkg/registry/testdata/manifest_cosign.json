@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "config": {
+    "mediaType": "application/vnd.oci.image.config.v1+json",
+    "size": 233,
+    "digest": "sha256:c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f80912"
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.dev.cosign.simplesigning.v1+json",
+      "size": 251,
+      "digest": "sha256:a1b2c3d405162738495a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f80912",
+      "annotations": {"dev.cosignproject.cosign/signature": "MEUCIQ..."}
+    }
+  ]
+}

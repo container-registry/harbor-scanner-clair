@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/container-registry/harbor-scanner-clair/pkg/clair"
+	"github.com/container-registry/harbor-scanner-clair/pkg/registry"
 )
 
 // Category classifies a scan failure. The value is both the prefix of the
@@ -60,8 +61,9 @@ func (e *Error) Unwrap() error {
 }
 
 // Categorize maps any error raised on the scan path onto a Category. An error
-// that already carries one keeps it; otherwise the sentinels the Clair client
-// wraps decide, then the context and transport errors underneath them.
+// that already carries one keeps it; otherwise the sentinels the registry and
+// Clair clients wrap decide, then the context and transport errors underneath
+// them.
 func Categorize(err error) Category {
 	if err == nil {
 		return ""
@@ -73,9 +75,13 @@ func Categorize(err error) Category {
 	}
 
 	switch {
-	case errors.Is(err, clair.ErrUnauthorized):
+	case errors.Is(err, registry.ErrRegistryAuth), errors.Is(err, clair.ErrUnauthorized):
 		return CategoryAuth
-	case errors.Is(err, clair.ErrUnscannableLayer):
+	case errors.Is(err, registry.ErrManifestNotFound), errors.Is(err, registry.ErrManifestFetch):
+		return CategoryManifest
+	case errors.Is(err, registry.ErrUnsupportedArtifact),
+		errors.Is(err, registry.ErrUnscannableLayer),
+		errors.Is(err, clair.ErrUnscannableLayer):
 		return CategoryUnscannable
 	case errors.Is(err, clair.ErrIndexFailed), errors.Is(err, clair.ErrNotIndexed):
 		return CategoryClairIndex
